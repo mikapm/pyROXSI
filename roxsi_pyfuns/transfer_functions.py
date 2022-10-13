@@ -4,79 +4,88 @@ elevation.
 """
 
 import numpy as np
-from numpy import pi
 import matplotlib.pyplot as plt
-from scipy.fft import fft, ifft
 from scipy import optimize
 
 
-def waveno_deep(freq):
+def waveno_deep(omega):
     """
-    Returns peak wavelength assuming linear deep water 
-    dispersion relation.
+    Returns wavenumber array assuming linear deep water 
+    dispersion relation omega**2 = g*k.
     Parameters:
-        f - float; period
+        f - np.array; radian frequency array
     Returns:
         k - wavenumber
     """
-    w = 2 * pi * freq
-    return Tp**2 * 9.81 / (2*pi)
+    # Make sure omega is a numpy array
+    omega = np.atleast_1d(omega)
+    return omega**2 / 9.81
 
-def waveno_shallow(freq, d):
+def waveno_shallow(omega, d):
     """
     Returns peak wavelength assuming shallow water 
-    linear dispersion relation.
+    linear dispersion relation omega = k*sqrt(gd).
     Parameters:
-        freq - np.array; frequency array
-        d - float; water depth
+        omega - np.array; radian frequency array
+        d - scalar; water depth (m)
     Returns:
         k - np.array; wavenumber array
     """
-    return Tp * np.sqrt(9.81 * d)
+    # Make sure omega is a numpy array
+    omega = np.atleast_1d(omega)
+    return omega / np.sqrt(9.81 * d)
 
-def waveno_full(freq, d, k0=None, **kwargs):
+def waveno_full(omega, d, k0=None, **kwargs):
     """
-    Returns peak wavelength assuming full linear 
-    dispersion relation.
-    Uses shallow-water wavenumber as initial guess unless 
-    another value is given.
+    Returns wavelength array assuming full linear 
+    dispersion relation omega**2 = g*k * tanh(k*d).
+    Uses shallow-water wavenumber array as initial guess unless 
+    another guess is given.
     Parameters:
-        freq - np.array; frequency array
-        d - float; water depth
-        k0 - float; initial guess wavelength. If None, uses S-W k
+        omega - np.array; radian frequency array
+        d - scalar; water depth
+        k0 - scalar; initial guess wavelength. If None, uses S-W k
              as initial guess.
         **kwargs for scipy.optimize.newton()
     Returns:
         k - np.array; wavenumber array
     """
+    # Make sure omega is a numpy array
+    omega = np.atleast_1d(omega)
+
     # Function to solve
-    def f(x, T, d): 
-        return ((2*pi*9.81)/x * np.tanh(2*pi*d/x) - (2*pi/T)**2)
+    def f(x, omega, d): 
+        return 9.81*x * np.tanh(x*d) - omega**2
 
     # Estimate shallow-water wavenumber if not given
     if k0 is None:
-        k0 = waveno_shallow(freq)
-    # Solve f(x) for intermediate water L using secant method
-    L = optimize.newton(f, Ld, args=(Tp, d))
+        k0 = waveno_shallow(omega, d)
+    # Solve f(x) for intermediate water k using secant method
+    k = optimize.newton(f, k0, args=(omega, d))
 
-    return L
+    return k
 
-class TRF(self):
+
+class TRF():
     """
     Pressure-to-sea surface transfer function (TRF) class.
     """
-    def __init__(fs, zp, type='RBR SoloD'):
+    def __init__(self, fs=16, zp=0, type='RBR SoloD'):
         """
-        Initialize class with pressure sensor parameters.
+        Initialize TRF class with pressure sensor parameters.
         Parameters:
-            fs - float; sampling frequency (Hz)
-            zp - float; height of pt sensor from seabed
+            fs - scalar; sampling frequency (Hz)
+            zp - scalar; height of pt sensor from seabed (m)
+            type - str; Sensor type
         """
         self.fs = fs
+        self.dt = 1 / self.fs # Sampling rate (sec)
         self.zp = zp
+        self.type = type
 
 
-    def p2eta_lin(self, pt, z0, fmin=0.05, fmax=0.33, M=512):
+    def p2eta_lin(self, pt, d, M=512, fmin=0.05, fmax=0.33, 
+                  max_att_corr=5, detrend=True):
         """
         Linear transfer function from water pressure to sea-surface 
         elevation eta.
@@ -85,11 +94,14 @@ class TRF(self):
         (http://neumeier.perso.ch/matlab/waves.html).
 
         Parameters:
-            pt - np.array; water pressure time series
-            z0 - float; mean water depth (m)
-            fmin - float; min. frequency for attenuation correction
-            fmax - float; max. frequency for attenuation correction
-            M - int; segment length (512 by default)
+            pt - np.array; water pressure fluctuation time series (m)
+            d - scalar; mean water depth (m)
+            M - int; window segment length (512 by default)
+            fmin - scalar; min. frequency for attenuation correction
+            fmax - scalar; max. frequency for attenuation correction
+            max_att_corr - scalar; maximum attenuation correction.
+                           Should not be higher than 5.
+            detrend - bool; set to False if data already detrended
         Returns:
             eta - np.array; linear sea surface elevation time series
         """
@@ -98,18 +110,68 @@ class TRF(self):
         pt = np.atleast_1d(pt)
         if not len(pt):
             raise ValueError('Empty pressure sensor array.')
-        
+        # Also make sure pt has no NaN values
+        if np.any(np.isnan(pt)):
+            raise ValueError('NaNs found in pt array, remove them.')
+
         # Make sure M is even by checking the remainder
         m = len(pt)
-        M = min(M, m)
+        M = int(min(M, m))
         if (M % 2) != 0:
             raise ValueError('M must be even.')
 
         # Define length of overlapping segments and zero-padding
         # array length N
         N_ol = M/2 # length of overlap
-        # length of array zero-paded to nearest multiple of M
-        N = np.ceil(m/M) * M 
+        # length of array zero-padded to nearest multiple of M
+        N = (np.ceil(m/M) * M ).astype(int)
+
+        # Make frequency array (only need the first half)
+        freqs = np.arange(M/2+1) * self.fs / M
+        oms = freqs * np.pi*2 # Radian frequencies
+
+        # Detrend data in overlapping segments if requested
+        if detrend:
+            for ss in np.arange(0, N-N_ol, N_ol).astype(int):
+                ## ss - segment start index; se - segment end index
+                se = min(ss + M, m);
+                print('ss={}, se={}'.format(ss,se))
+                # Take out segment to detrend
+                seg = pt[ss:se]
+                seglen = len(seg)
+                # Calculate trend in segment
+                x = np.arange(seglen) # Inputs
+                trend = np.polyfit(x, seg, 1)
+                # Calculate mean water depth
+                dseg = np.polyval(trend, seglen/2)
+                # Remove trend
+                seg -= np.polyval(trend, x)
+                # Calculate wavenumbers using full dispersion relation
+                ks = waveno_full(oms, d=dseg)
+                # Calculate pressure response factor Kp
+                Kp = np.cosh(ks*self.zp) / np.cosh(ks*dseg)
+                # Apply limits to attenuation correction (ac)
+                acidx = np.logical_or(freqs<fmin, freqs>fmax)
+                Kp[acidx] = 1 # No correction outside of range
+                # Apply attenuation correction to desired range
+                Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
+                # Linear decrease of correction for freqs above fmax
+                Kphf = Kp[freqs>fmax].copy() # high-freq part of Kp
+                # Get Kp value closest to fmax
+                Kpfmax = Kp[np.where(freqs<=fmax)[0][-1]] 
+                dfac = Kpfmax / len(Kphf) # Decrease factor
+                Kp[freqs>fmax] = np.arange(len(Kphf))[::-1] * dfac
+
+        return Kp, freqs
 
 
+
+# Test script
+if __name__ == '__main__':
+    pt = (np.sin(2*np.linspace(0, 24*2*np.pi, 2*12*60)) + 
+                1.2*np.sin(0.5*np.linspace(0, 24*2*np.pi, 2*12*60)) + 
+                5)
+    trf = TRF(fs=2, zp=0.08)
+    Kp, freqs = trf.p2eta_lin(pt, np.mean(pt))
+    
     
