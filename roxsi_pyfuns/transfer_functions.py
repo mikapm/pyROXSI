@@ -6,6 +6,7 @@ elevation.
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import optimize
+from scipy.signal import hann
 
 
 def waveno_deep(omega):
@@ -84,8 +85,7 @@ class TRF():
         self.type = type
 
 
-    def p2eta_lin(self, pt, d, M=512, fmin=0.05, fmax=0.33, 
-                  max_att_corr=5, detrend=True):
+    def p2eta_lin(self, pp, M=512, fmin=0.05, fmax=0.33, max_att_corr=5):
         """
         Linear transfer function from water pressure to sea-surface 
         elevation eta.
@@ -94,20 +94,17 @@ class TRF():
         (http://neumeier.perso.ch/matlab/waves.html).
 
         Parameters:
-            pt - np.array; water pressure fluctuation time series (m)
-            d - scalar; mean water depth (m)
+            pp - np.array; water pressure fluctuation time series (m)
             M - int; window segment length (512 by default)
             fmin - scalar; min. frequency for attenuation correction
             fmax - scalar; max. frequency for attenuation correction
             max_att_corr - scalar; maximum attenuation correction.
                            Should not be higher than 5.
-            detrend - bool; set to False if data already detrended
         Returns:
             eta - np.array; linear sea surface elevation time series
         """
         
-        # Make sure pt is np.array and check that it is not empty
-        pt = np.atleast_1d(pt)
+        pt = pp.copy() # Copy array so we don't change the input
         if not len(pt):
             raise ValueError('Empty pressure sensor array.')
         # Also make sure pt has no NaN values
@@ -122,56 +119,166 @@ class TRF():
 
         # Define length of overlapping segments and zero-padding
         # array length N
-        N_ol = M/2 # length of overlap
+        N_ol = M//2 # length of overlap
         # length of array zero-padded to nearest multiple of M
         N = (np.ceil(m/M) * M ).astype(int)
+        print('N = {}'.format(N))
 
         # Make frequency array (only need the first half)
         freqs = np.arange(M/2+1) * self.fs / M
         oms = freqs * np.pi*2 # Radian frequencies
 
-        # Detrend data in overlapping segments if requested
-        if detrend:
-            for ss in np.arange(0, N-N_ol, N_ol).astype(int):
-                ## ss - segment start index; se - segment end index
-                se = min(ss + M, m);
-                print('ss={}, se={}'.format(ss,se))
-                # Take out segment to detrend
-                seg = pt[ss:se]
-                seglen = len(seg)
-                # Calculate trend in segment
-                x = np.arange(seglen) # Inputs
-                trend = np.polyfit(x, seg, 1)
-                # Calculate mean water depth
-                dseg = np.polyval(trend, seglen/2)
-                # Remove trend
-                seg -= np.polyval(trend, x)
-                # Calculate wavenumbers using full dispersion relation
-                ks = waveno_full(oms, d=dseg)
-                # Calculate pressure response factor Kp
-                Kp = np.cosh(ks*self.zp) / np.cosh(ks*dseg)
-                # Apply limits to attenuation correction (ac)
-                acidx = np.logical_or(freqs<fmin, freqs>fmax)
-                Kp[acidx] = 1 # No correction outside of range
-                # Apply attenuation correction to desired range
-                Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
-                # Linear decrease of correction for freqs above fmax
-                Kphf = Kp[freqs>fmax].copy() # high-freq part of Kp
-                # Get Kp value closest to fmax
-                Kpfmax = Kp[np.where(freqs<=fmax)[0][-1]] 
-                dfac = Kpfmax / len(Kphf) # Decrease factor
-                Kp[freqs>fmax] = np.arange(len(Kphf))[::-1] * dfac
+        # Allocate output array and define overlapping window (Hann)
+        eta = np.zeros(N)
+        win = hann(M)
+        win[M//2:] = 1 - win[:M//2]
 
-        return Kp, freqs
+        # Detrend data in overlapping segments if requested
+        for ss in np.arange(0, N-N_ol, N_ol).astype(int):
+            ## ss - segment start index; se - segment end index
+            se = min(ss + M, m);
+            print('ss={}, se={}'.format(ss,se))
+            # Take out segment to detrend
+            seg = pt[ss:se].copy()
+            seglen = len(seg)
+            # Calculate trend in segment
+            x = np.arange(seglen) # Inputs
+            trend = np.polyfit(x, seg, 1)
+            # Calculate mean water depth
+            dseg = np.polyval(trend, seglen/2)
+            # Remove trend
+            seg_dt = seg - np.polyval(trend, x)
+
+            # Calculate wavenumbers using full dispersion relation
+            ks = waveno_full(oms, d=dseg)
+
+            # Calculate pressure response factor Kp
+            Kp = np.cosh(ks*self.zp) / np.cosh(ks*dseg)
+            # Apply limits to attenuation correction (ac)
+            acidx = np.logical_or(freqs<fmin, freqs>fmax)
+            Kp[acidx] = 1 # No correction outside of range
+            # Apply attenuation correction to desired range
+            Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
+            # Linear decrease of correction for freqs above fmax
+            Kphf = Kp[freqs>fmax].copy() # high-freq part of Kp
+            # Get Kp index closest to fmax
+            ifmax = np.where(freqs<=fmax)[0][-1]
+            # Get indices for linear decrease
+            idxLin = np.arange(ifmax, min(ifmax+np.fix(len(ks)/10)+2, len(ks)))
+            idxLin = idxLin.astype(int)
+            dfac = (Kp[ifmax]-1) / len(idxLin) # Decrease factor
+            # Apply linear decrease to defined range
+            Kp[idxLin] = np.arange(len(idxLin))[::-1] * dfac + 1
+            Kp[0] = 1
+            # Duplicate symmetric and mirrored second half
+            Kp = np.concatenate([Kp[:-1], np.flip(Kp[1:])])
+            # If segment length < M, zero pad end of segment
+            if len(seg_dt) < M:
+                seg_dt = np.pad(seg_dt, (0, M-len(seg_dt)), 'constant')
+            
+            # Take FFT of detrended segment
+            pHat_seg = np.fft.fft(seg_dt)
+            # Apply correction factor
+            etaHat_seg = pHat_seg / Kp
+            # Inverse FFT to get sea surface elevations
+            eta_seg = np.real(np.fft.ifft(etaHat_seg))
+            # Remove potential zero padding
+            eta_seg = eta_seg[:seglen]
+            # Add segment trend back to data
+            eta_seg += np.polyval(trend, x)
+
+            # Apply overlapping window
+            eta[ss:se] += eta_seg * win[:seglen]
+            # Make sure first and last segments are correct
+            if ss == 0:
+                se_n = int(min(N_ol, seglen)) # Updated segment end index
+                eta[:se_n] = eta_seg[:se_n]
+            if ss + M >= N and seglen > N_ol:
+                eta[ss+N_ol:se] = eta_seg[N_ol:]
+        
+        # Reshape output array
+        eta = eta[:m]
+
+        return eta
 
 
 
 # Test script
 if __name__ == '__main__':
-    pt = (np.sin(2*np.linspace(0, 24*2*np.pi, 2*12*60)) + 
-                1.2*np.sin(0.5*np.linspace(0, 24*2*np.pi, 2*12*60)) + 
-                5)
-    trf = TRF(fs=2, zp=0.08)
-    Kp, freqs = trf.p2eta_lin(pt, np.mean(pt))
+    """
+    Test script using synthetic example data.
+    """
+    import os
+    import sys
+    import glob
+    import pandas as pd
+    from scipy.io import loadmat
+    from argparse import ArgumentParser
+
+    # Input arguments
+    def parse_args(**kwargs):
+        parser = ArgumentParser()
+        parser.add_argument("-dr", 
+                help=("Path to data root directory"),
+                type=str,
+                default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/RBRDuetDT/Level1/mat',
+                )
+        parser.add_argument("-date", 
+                help=("File date (yyyymmdd)"),
+                type=str,
+                default='20220627',
+                )
+        parser.add_argument("-mid", 
+                help=("Mooring ID"),
+                type=str,
+                default='C2vp',
+                )
+        parser.add_argument("-sid", 
+                help=("Sensor ID"),
+                type=str,
+                default='duetDT',
+                )
+        parser.add_argument("-M", 
+                help=("Segment window length (number of samples)"),
+                type=int,
+                default=512,
+                )
+        parser.add_argument("-fmin", 
+                help=("Min. frequency for attenuation correction"),
+                type=float,
+                default=0.05,
+                )
+        parser.add_argument("-fmax", 
+                help=("Max. frequency for attenuation correction"),
+                type=float,
+                default=0.33,
+                )
+
+        return parser.parse_args(**kwargs)
+
+    # Call args parser to create variables out of input arguments
+    args = parse_args(args=sys.argv[1:])
+
+    # Load ROXSI pressure sensor time series
+    fn_mat = glob.glob(os.path.join(args.dr, 'roxsi_{}_L1_{}_*_{}.mat'.format(
+        args.sid, args.mid, args.date)))[0]
+    print('Loading pressure sensor mat file {}'.format(fn_mat))
+    mat = loadmat(fn_mat)
+    # Read pressure time series and timestamps
+    pt = np.array(mat['DUETDT']['Pwater'].item()).squeeze()
+    time_mat = np.array(mat['DUETDT']['time_dnum'].item()).squeeze()
+    time_ind = pd.to_datetime(time_mat-719529,unit='d') # Convert timestamps
+    # Read sampling frequency and sensor height above seabed
+    fs = int(mat['DUETDT']['sample_freq'].item()[0].split(' ')[0])
+    zp = mat['DUETDT']['Zbed'].item().squeeze().item()
+    # Make pandas DataFrame
+    dfp = pd.DataFrame(data={'pt':pt}, index=time_ind)
+
+    # Initialize class
+    trf = TRF(fs=fs, zp=zp)
+    # Transform pressure -> eta for 20-min chunk
+    eta = trf.p2eta_lin(dfp['pt'].iloc[0:19200], M=args.M, 
+                        fmin=args.fmin, fmax=args.fmax)
+
     
     
