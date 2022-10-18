@@ -133,7 +133,7 @@ class TRF():
         win = hann(M)
         win[M//2:] = 1 - win[:M//2]
 
-        # Detrend data in overlapping segments if requested
+        # Detrend data in overlapping segments 
         for ss in np.arange(0, N-N_ol, N_ol).astype(int):
             ## ss - segment start index; se - segment end index
             se = min(ss + M, m);
