@@ -85,7 +85,8 @@ class TRF():
         self.type = type
 
 
-    def p2eta_lin(self, pp, M=512, fmin=0.05, fmax=0.33, max_att_corr=5):
+    def p2eta_lin(self, pp, M=512, fmin=0.05, fmax=0.33, 
+                  att_corr=True, max_att_corr=5):
         """
         Linear transfer function from water pressure to sea-surface 
         elevation eta.
@@ -96,8 +97,9 @@ class TRF():
         Parameters:
             pp - np.array; water pressure fluctuation time series (m)
             M - int; window segment length (512 by default)
-            fmin - scalar; min. frequency for attenuation correction
-            fmax - scalar; max. frequency for attenuation correction
+            fmin - scalar; min. cutoff frequency
+            fmax - scalar; max. cutoff frequency
+            att_corr - bool; if True, applies attenuation correction
             max_att_corr - scalar; maximum attenuation correction.
                            Should not be higher than 5.
         Returns:
@@ -157,19 +159,20 @@ class TRF():
             # Apply limits to attenuation correction (ac)
             acidx = np.logical_or(freqs<fmin, freqs>fmax)
             Kp[acidx] = 1 # No correction outside of range
-            # Apply attenuation correction to desired range
-            Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
-            # Linear decrease of correction for freqs above fmax
-            Kphf = Kp[freqs>fmax].copy() # high-freq part of Kp
-            # Get Kp index closest to fmax
-            ifmax = np.where(freqs<=fmax)[0][-1]
-            # Get indices for linear decrease
-            idxLin = np.arange(ifmax, min(ifmax+np.fix(len(ks)/10)+2, len(ks)))
-            idxLin = idxLin.astype(int)
-            dfac = (Kp[ifmax]-1) / len(idxLin) # Decrease factor
-            # Apply linear decrease to defined range
-            Kp[idxLin] = np.arange(len(idxLin))[::-1] * dfac + 1
-            Kp[0] = 1
+            if att_corr:
+                # Apply attenuation correction to desired range
+                Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
+                # Linear decrease of correction for freqs above fmax
+                Kphf = Kp[freqs>fmax].copy() # high-freq part of Kp
+                # Get Kp index closest to fmax
+                ifmax = np.where(freqs<=fmax)[0][-1]
+                # Get indices for linear decrease
+                idxLin = np.arange(ifmax, min(ifmax+np.fix(len(ks)/10)+2, len(ks)))
+                idxLin = idxLin.astype(int)
+                dfac = (Kp[ifmax]-1) / len(idxLin) # Decrease factor
+                # Apply linear decrease to defined range
+                Kp[idxLin] = np.arange(len(idxLin))[::-1] * dfac + 1
+                Kp[0] = 1
             # Duplicate symmetric and mirrored second half
             Kp = np.concatenate([Kp[:-1], np.flip(Kp[1:])])
             # If segment length < M, zero pad end of segment
