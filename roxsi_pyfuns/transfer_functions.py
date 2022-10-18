@@ -86,7 +86,7 @@ class TRF():
 
 
     def p2eta_lin(self, pp, M=512, fmin=0.05, fmax=0.33, 
-                  att_corr=True, max_att_corr=5):
+                  att_corr=True, max_att_corr=5, return_kp=False):
         """
         Linear transfer function from water pressure to sea-surface 
         elevation eta.
@@ -102,6 +102,8 @@ class TRF():
             att_corr - bool; if True, applies attenuation correction
             max_att_corr - scalar; maximum attenuation correction.
                            Should not be higher than 5.
+            return_kp - bool; set to True to also return the transfer
+                        function Kp and wavenumbers ks
         Returns:
             eta - np.array; linear sea surface elevation time series
         """
@@ -124,7 +126,6 @@ class TRF():
         N_ol = M//2 # length of overlap
         # length of array zero-padded to nearest multiple of M
         N = (np.ceil(m/M) * M ).astype(int)
-        print('N = {}'.format(N))
 
         # Make frequency array (only need the first half)
         freqs = np.arange(M/2+1) * self.fs / M
@@ -139,7 +140,6 @@ class TRF():
         for ss in np.arange(0, N-N_ol, N_ol).astype(int):
             ## ss - segment start index; se - segment end index
             se = min(ss + M, m);
-            print('ss={}, se={}'.format(ss,se))
             # Take out segment to detrend
             seg = pt[ss:se].copy()
             seglen = len(seg)
@@ -156,11 +156,11 @@ class TRF():
 
             # Calculate pressure response factor Kp
             Kp = np.cosh(ks*self.zp) / np.cosh(ks*dseg)
-            # Apply limits to attenuation correction (ac)
+            # Apply cutoff limits
             acidx = np.logical_or(freqs<fmin, freqs>fmax)
             Kp[acidx] = 1 # No correction outside of range
             if att_corr:
-                # Apply attenuation correction to desired range
+                # Apply attenuation correction factor to desired range
                 Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
                 # Linear decrease of correction for freqs above fmax
                 Kphf = Kp[freqs>fmax].copy() # high-freq part of Kp
@@ -202,7 +202,10 @@ class TRF():
         # Reshape output array
         eta = eta[:m]
 
-        return eta
+        if return_kp:
+            return eta, Kp, ks
+        else:
+            return eta
 
 
 
