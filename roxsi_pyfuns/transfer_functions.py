@@ -104,7 +104,7 @@ class TRF():
             eta - np.array; linear sea surface elevation time series
         """
         
-        pt = pp.copy() # Copy array so we don't change the input
+        pt = pp.copy() # Copy p array so we don't change the input
         if not len(pt):
             raise ValueError('Empty pressure sensor array.')
         # Also make sure pt has no NaN values
@@ -234,7 +234,7 @@ if __name__ == '__main__':
                 default='C2vp',
                 )
         parser.add_argument("-sid", 
-                help=("Sensor ID"),
+                help=("Sensor ID (duetDT or soloD)"),
                 type=str,
                 default='duetDT',
                 )
@@ -267,7 +267,8 @@ if __name__ == '__main__':
     # Read pressure time series and timestamps
     pt = np.array(mat['DUETDT']['Pwater'].item()).squeeze()
     time_mat = np.array(mat['DUETDT']['time_dnum'].item()).squeeze()
-    time_ind = pd.to_datetime(time_mat-719529,unit='d') # Convert timestamps
+    # Convert timestamps
+    time_ind = pd.to_datetime(time_mat-719529,unit='d') 
     # Read sampling frequency and sensor height above seabed
     fs = int(mat['DUETDT']['sample_freq'].item()[0].split(' ')[0])
     zp = mat['DUETDT']['Zbed'].item().squeeze().item()
