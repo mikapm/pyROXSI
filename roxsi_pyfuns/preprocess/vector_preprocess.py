@@ -256,7 +256,10 @@ class ADV():
     def despike_GN02(self, df, interp='linear', sec_lim=1, corrd=True):
         """
         Despike Nortek Vector velocities using low correlation values
-        to discard unreliable measurements
+        to discard unreliable measurements following the Goring and
+        Nikora (2002, J. Hydraul. Eng.) phase space method, including the
+        modifications by Wahl (2003, J. Hydraul. Eng.) and Mori
+        (2007, J. Eng. Mech.).
 
         Parameters:
             df - pd.DataFrame; dataframe with velocity (u,v,w) time series.
@@ -392,29 +395,47 @@ if __name__ == '__main__':
         if args.savefig:
             # Define figure filename and check if it exists
             if args.datestr is None:
-                fn_hpr = os.path.join(figdir, 'heading_pitch_roll_{}.pdf'.format(
+                fn_hpr = os.path.join(figdir, 'hpr_press_{}.pdf'.format(
                     mid))
             else:
-                fn_hpr = os.path.join(figdir, 'heading_pitch_roll_{}_{}.pdf'.format(
+                fn_hpr = os.path.join(figdir, 'hpr_press_{}_{}.pdf'.format(
                     mid, args.datestr))
 
             if not os.path.isfile(fn_hpr) or args.overwrite_fig:
                 print('Plotting heading, pitch & roll timeseries ...')
-                fig, ax = plt.subplots(figsize=(12,5), constrained_layout=True)
-                sen[['heading', 'pitch', 'roll']].plot(ax=ax)
-                ax.set_ylabel('Degrees')
-                ax.set_title('Vector {} heading, pitch & roll'.format(mid))
+                fig, axes = plt.subplots(figsize=(12,5), nrows=2, sharex=True,
+                                         constrained_layout=True)
+                vec_d[['heading', 'pitch', 'roll']].plot(ax=axes[0])
+                vec_d['pressure'].plot(ax=axes[1])
+                axes[0].set_ylabel('Degrees')
+                axes[1].set_ylabel('dB')
+                axes[1].legend()
+                axes[0].set_title('Vector {} heading, pitch & roll + pressure'.format(
+                    mid))
                 # Save figure
                 plt.savefig(fn_hpr, bbox_inches='tight', dpi=300)
                 plt.close()
 
         # Plot raw vs. QC'd timeseries
-        fig, axes = plt.subplots(figsize=(12,7), nrows=3, sharex=True, sharey=True, 
-                                 constrained_layout=True)
-        vec_d[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
-        vec_d[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
-        vec_d[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
-        plt.show()
+        if args.savefig:
+            # Define figure filename and check if it exists
+            if args.datestr is None:
+                fn_vel = os.path.join(figdir, 'vel_desp_{}.pdf'.format(
+                    mid))
+            else:
+                fn_vel = os.path.join(figdir, 'vel_desp_{}_{}.pdf'.format(
+                    mid, args.datestr))
+
+            if not os.path.isfile(fn_vel) or args.overwrite_fig:
+                fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
+                                        sharex=True, sharey=True, 
+                                        constrained_layout=True)
+                vec_d[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
+                vec_d[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
+                vec_d[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
+                # Save figure
+                plt.savefig(fn_vel, bbox_inches='tight', dpi=300)
+                plt.close()
 
 
 print('Done. \n')
