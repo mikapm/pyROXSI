@@ -911,8 +911,8 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
     b = lambda_u * 1.483*robust.mad(y, c=1)
     c = lambda_u * 1.483*robust.mad(z, c=1)
 
-    # Mask for detected spikes (0=spike)
-    spike_mask = np.ones(N, dtype=bool)
+    # Mask for detected spikes (1=spike)
+    spike_mask = np.zeros(N, dtype=bool)
 
     # Check for outliers (points not within the ellipsoid)
     for i in range(N):
@@ -936,14 +936,14 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
         # the ellipsoid.
         dis = (x2**2 + y2**2 + z2**2) - (x1**2 + y1**2 + z1**2)
         if dis < 0:
-            spike_mask[i] = 0
+            spike_mask[i] = 1
 
-    # Replace spikes if any were detected
-    if spike_mask.sum() != N:
-        # Replace spikes by interpolation
-        u = swi.replace_1d(u, spike_mask, 
-                replace_single=replace_single,
-                replace_multi=replace_multi)
+#     # Replace spikes if any were detected
+#     if spike_mask.sum() != N:
+#         # Replace spikes by interpolation
+#         u = swi.replace_1d(u, spike_mask, 
+#                 replace_single=replace_single,
+#                 replace_multi=replace_multi)
 
     if figname is not None:
         fig = plt.figure(figsize=(12,12))
@@ -966,7 +966,8 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
     # Add back median
     u = u + ts_med
 
-    return u, spike_mask
+#     return u, spike_mask
+    return spike_mask
 
 
 def phase_space_2d(ts, replace_single='linear', replace_multi='linear',
