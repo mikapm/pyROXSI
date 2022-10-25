@@ -204,19 +204,25 @@ class ADV():
             # Combine both dataframes into one
             vec_d = pd.concat([uvw_d, hpr_d], axis=1)
 
-        return vec_d, sen_d
+            # Convert dataframe to xarray dataset and save to daily netcdf file
+            if datestr is None:
+                # At the end, return full dataset by concatenating daily datasets
+                ds_list = [] # Append daily datasets for merging
+
+        return vec_d
     
 
     def despike_correlations(self, df, interp='linear'):
         """
         Despike Nortek Vector velocities using low correlation values
-        to discard unreliable measurements
+        to discard unreliable measurements following Elgar et al. (2001, Jtech);
+        https://doi.org/10.1175/1520-0426(2001)018<1735:CMPITS>2.0.CO;2
 
         Parameters:
             df - pd.DataFrame; dataframe with velocity (u,v,w) and
                  correlation (corr1, corr2, corr3) time series.
             interp - str; interpolation method for discarded data.
-                          Options: ['linear', 'cubic', 'none']
+                     Options: see pandas.DataFrame.interpolate()
         
         Returns:
             df - Updated dataframe with corrected velocity columns added.
@@ -236,8 +242,7 @@ class ADV():
         for (kv, kc) in zip(vels, cors):
             vel = vels[kv]
             cor = cors[kc]
-            # Set low-correlation cutoff following Elgar et al. (2001, Jtech)
-            # https://doi.org/10.1175/1520-0426(2001)018<1735:CMPITS>2.0.CO;2
+            # Set low-correlation cutoff following Elgar et al. (2001)
             corcutoff = 30 + 40*np.sqrt(self.dt/25)
             # Set velocity measurements corresponding to low correlation to NaN
             mask = (cor.values < corcutoff)
@@ -277,12 +282,18 @@ class ADV():
         # Iterate over velocity components
         for kv, k in zip(vels, ['u', 'v', 'w']):
             vel = vels[kv]
-            _, mask = despike.phase_space_3d(vel.values)
-            vel[~mask] = np.nan
+            mask = despike.phase_space_3d(vel.values)
+            vel[mask] = np.nan
             # Interpolate according to requested method
             vel.interpolate(method=interp, limit=sec_lim*self.fs, inplace=True)
             # Add corrected velocity column to input df
             df['{}_desp'.format(k)] = vel
+    
+
+    def pd2nc(self, df):
+        """
+        Convert and save pd.DataFrame of Vector data to netcdf format.
+        """
 
 
 
@@ -372,10 +383,10 @@ if __name__ == '__main__':
         # Read data (specific date or all)
         if args.datestr is None:
             # Don't specify date
-            vec_d, sen_d = adv.loaddata()
+            vec_d = adv.loaddata()
         else:
             # Read specified date
-            vec_d, sen_d = adv.loaddata(datestr=args.datestr)
+            vec_d = adv.loaddata(datestr=args.datestr)
 
         # Plot heading, pitch & roll time series
         if args.savefig:
@@ -398,7 +409,7 @@ if __name__ == '__main__':
                 plt.close()
 
         # Plot raw vs. QC'd timeseries
-        fig, axes = plt.subplots(figsize=(12,7), nrows=3, sharex=True, 
+        fig, axes = plt.subplots(figsize=(12,7), nrows=3, sharex=True, sharey=True, 
                                  constrained_layout=True)
         vec_d[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
         vec_d[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
