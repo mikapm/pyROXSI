@@ -43,7 +43,7 @@ def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
     # Correct heading for magnetic declination
     heading += magdec
 
-    # Define trigonometric terms   
+    # Define trigonometric terms
     cos_h = np.cos(heading)
     sin_h = np.sin(heading)
     cos_p = np.cos(pitch)
@@ -60,7 +60,7 @@ def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
     uN = ul*cos_h + vl*sin_h
     uE = ul*sin_h - vl*cos_h
 
-    # Concatenate output array
+    # Merge output arrays
     vel_out = np.array([uE, uN, wl])
 
     return vel_out
