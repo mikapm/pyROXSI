@@ -461,9 +461,12 @@ if __name__ == '__main__':
 fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
                          sharex=True, sharey=True, 
                          constrained_layout=True)
-vec_d[['u', 'u_corr', 'u_desp', 'uE']].plot(ax=axes[0])
-vec_d[['v', 'v_corr', 'v_desp', 'uN']].plot(ax=axes[1])
-vec_d[['w', 'w_corr', 'w_desp', 'uU']].plot(ax=axes[2])
+# vec_d[['u', 'u_corr', 'u_desp', 'uE']].plot(ax=axes[0])
+vec_d[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
+# vec_d[['v', 'v_corr', 'v_desp', 'uN']].plot(ax=axes[1])
+vec_d[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
+# vec_d[['w', 'w_corr', 'w_desp', 'uU']].plot(ax=axes[2])
+vec_d[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
 
 plt.tight_layout()
 plt.show()
