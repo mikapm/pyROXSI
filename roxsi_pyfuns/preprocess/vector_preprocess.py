@@ -10,7 +10,8 @@ import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 from datetime import datetime as DT
-from roxsi_pyfuns import despike
+from roxsi_pyfuns import despike as rpd
+from roxsi_pyfuns import coordinate_transforms as rpct
 
 class ADV():
     """
@@ -64,8 +65,8 @@ class ADV():
         dataframe. Header info can be found in .hdr files.
 
         Raw data gets saved into netcdf files, with 1-Hz data from .sen
-        files (e.g. heading, pitch & roll) interpolated to the sampling 
-        rate of the velocity data.
+        files (e.g. heading, pitch & roll) linearly interpolated to the 
+        sampling rate of the velocity data.
 
         Parameters:
             datestr - str (yyyymmdd); if not None, read only requested
@@ -201,7 +202,10 @@ class ADV():
             uvw_d = pd.concat(uvw_dfs)
             # Same for interpolated sen (H,P,R,T) data
             hpr_d = pd.concat(hpr_dfs)
-            # Combine both dataframes into one
+
+
+
+            # Combine all dataframes into one
             vec_d = pd.concat([uvw_d, hpr_d], axis=1)
 
             # Convert dataframe to xarray dataset and save to daily netcdf file
@@ -258,7 +262,7 @@ class ADV():
         Despike Nortek Vector velocities using low correlation values
         to discard unreliable measurements following the Goring and
         Nikora (2002, J. Hydraul. Eng.) phase space method, including the
-        modifications by Wahl (2003, J. Hydraul. Eng.) and Mori
+        modifications by Wahl (2003, J. Hydraul. Eng.) and Mori et al.
         (2007, J. Eng. Mech.).
 
         Parameters:
@@ -285,17 +289,19 @@ class ADV():
         # Iterate over velocity components
         for kv, k in zip(vels, ['u', 'v', 'w']):
             vel = vels[kv]
-            mask = despike.phase_space_3d(vel.values)
+            mask = rpd.phase_space_3d(vel.values)
             vel[mask] = np.nan
             # Interpolate according to requested method
-            vel.interpolate(method=interp, limit=sec_lim*self.fs, inplace=True)
+            vel.interpolate(method=interp, limit=sec_lim*self.fs, 
+                            inplace=True)
             # Add corrected velocity column to input df
             df['{}_desp'.format(k)] = vel
     
 
     def pd2nc(self, df):
         """
-        Convert and save pd.DataFrame of Vector data to netcdf format.
+        Convert and save pd.DataFrame of Vector data to netcdf 
+        format.
         """
 
 
@@ -390,6 +396,20 @@ if __name__ == '__main__':
         else:
             # Read specified date
             vec_d = adv.loaddata(datestr=args.datestr)
+        
+        # Rotate despiked velocities to (E,N,U) reference frame
+        vel_cols = ['u_desp', 'v_desp', 'w_desp']
+        # Take out velocity array
+        vel = vec_d[vel_cols].values
+        # Rotate velocities
+        vel_enu = rpct.uvw2enu(vel, heading=vec_d['heading'],
+                               pitch=vec_d['pitch'], roll=vec_d['roll'],
+                               magdec=adv.magdec)
+        # Add rotated (despiked) velocities to dataframe
+        print('vel_enu shape: ', vel_enu.shape)
+        vec_d['uE'] = vel_enu[0,:]
+        vec_d['uN'] = vel_enu[1,:]
+        vec_d['uU'] = vel_enu[2,:]
 
         # Plot heading, pitch & roll time series
         if args.savefig:
