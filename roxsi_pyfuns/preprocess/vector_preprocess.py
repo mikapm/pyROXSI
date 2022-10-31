@@ -59,7 +59,7 @@ class ADV():
 
         
     def loaddata(self, datestr=None, despike_corr=True, despike_GN02=True,
-                 interp='linear'):
+                 interp='linear', rec_start=None, rec_end=None):
         """
         Read raw data from chosen mooring ID into pandas
         dataframe. Header info can be found in .hdr files.
@@ -76,6 +76,10 @@ class ADV():
             despike_GN02 - bool; if True, use Goring & Nikora (2002) phase space
                            method to despike velocities (burst-wise).
             interp - str; interpolation method for despiking algorithms.
+            rec_start - pd.Timestamp; optional record start time, crops record
+                        prior to given timestamp.
+            rec_end - pd.Timestamp; optional record end time, crops record
+                      after given timestamp.
         """
         # Define column names (see .hdr files for info)
         cols_dat = ['burst', 'ensemble', 'u', 'v', 'w', 
@@ -127,7 +131,10 @@ class ADV():
         t0 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year0, month0, day0))
         # End date
         t1 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year1, month1, day1))
+        # Make time array
         days = pd.date_range(t0, t1, freq='1D')
+        # Empty list to store daily dataframes for merging\
+        dfd_list = []
         # Iterate over days (i is date index starting at 0)
         dp_cnt = 0 # daily data point counter
         for i, date in enumerate(days[0:2]):
@@ -208,12 +215,18 @@ class ADV():
             # Combine all dataframes into one
             vec_d = pd.concat([uvw_d, hpr_d], axis=1)
 
+            # Append daily dataframe to list for merging of whole dataset
+            dfd_list.append(vec_d)
+
             # Convert dataframe to xarray dataset and save to daily netcdf file
             if datestr is None:
                 # At the end, return full dataset by concatenating daily datasets
                 ds_list = [] # Append daily datasets for merging
 
-        return vec_d
+        # Merge daily dataframes to full dataframe
+        vec = pd.concat(dfd_list)
+
+        return vec
     
 
     def despike_correlations(self, df, interp='linear'):
@@ -374,6 +387,11 @@ if __name__ == '__main__':
     outdir = os.path.join(args.dr, 'Level1')
     figdir = os.path.join(outdir, 'img')
 
+    # Read mooring info excel file
+    rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
+    fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
+    dfm = pd.read_excel(fn_minfo, parse_dates=['record_start', 'record_end'])
+
     # Check if processing just one mooring or all
     if args.mid == 'ALL':
         # Loop through all mooring IDs
@@ -392,24 +410,37 @@ if __name__ == '__main__':
         # Read data (specific date or all)
         if args.datestr is None:
             # Don't specify date
-            vec_d = adv.loaddata()
+            vec = adv.loaddata()
         else:
             # Read specified date
-            vec_d = adv.loaddata(datestr=args.datestr)
+            vec = adv.loaddata(datestr=args.datestr)
         
         # Rotate despiked velocities to (E,N,U) reference frame
         vel_cols = ['u_desp', 'v_desp', 'w_desp']
         # Take out velocity array
-        vel = vec_d[vel_cols].values
+        vel = vec[vel_cols].values
+        # Check if tilt sensor was vertical
+        config = dfm[dfm['mooring_ID']==mid]['config'].item().split(' ')[0]
+        if config.lower() == 'vert':
+            # Vertical tilt sensor - use compass-measured headings
+            print('Vertical tilt sensor')
+            heading_deg = int(
+                dfm[dfm['mooring_ID']=='L1v01']['notes'].item().split(' ')[-1]
+                )
+            # Make array of constant heading
+            heading = np.ones_like(vec['heading'].values) * heading_deg
+        else:
+            # Use sensor-read headings
+            heading = vec['heading']
         # Rotate velocities
-        vel_enu = rpct.uvw2enu(vel, heading=vec_d['heading'],
-                               pitch=vec_d['pitch'], roll=vec_d['roll'],
+        vel_enu = rpct.uvw2enu(vel, heading=heading,
+                               pitch=vec['pitch'], roll=vec['roll'],
                                magdec=adv.magdec)
         # Add rotated (despiked) velocities to dataframe
         print('vel_enu shape: ', vel_enu.shape)
-        vec_d['uE'] = vel_enu[0,:]
-        vec_d['uN'] = vel_enu[1,:]
-        vec_d['uU'] = vel_enu[2,:]
+        vec['uE'] = vel_enu[0,:]
+        vec['uN'] = vel_enu[1,:]
+        vec['uU'] = vel_enu[2,:]
 
         # Plot heading, pitch & roll time series
         if args.savefig:
@@ -425,8 +456,8 @@ if __name__ == '__main__':
                 print('Plotting heading, pitch & roll timeseries ...')
                 fig, axes = plt.subplots(figsize=(12,5), nrows=2, sharex=True,
                                          constrained_layout=True)
-                vec_d[['heading', 'pitch', 'roll']].plot(ax=axes[0])
-                vec_d['pressure'].plot(ax=axes[1])
+                vec[['heading', 'pitch', 'roll']].plot(ax=axes[0])
+                vec['pressure'].plot(ax=axes[1])
                 axes[0].set_ylabel('Degrees')
                 axes[1].set_ylabel('dB')
                 axes[1].legend()
@@ -450,9 +481,9 @@ if __name__ == '__main__':
                 fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
                                         sharex=True, sharey=True, 
                                         constrained_layout=True)
-                vec_d[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
-                vec_d[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
-                vec_d[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
+                vec[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
+                vec[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
+                vec[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
                 # Save figure
                 plt.savefig(fn_vel, bbox_inches='tight', dpi=300)
                 plt.close()
@@ -462,11 +493,11 @@ fig, axes = plt.subplots(figsize=(12,7), nrows=3,
                          sharex=True, sharey=True, 
                          constrained_layout=True)
 # vec_d[['u', 'u_corr', 'u_desp', 'uE']].plot(ax=axes[0])
-vec_d[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
+vec[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
 # vec_d[['v', 'v_corr', 'v_desp', 'uN']].plot(ax=axes[1])
-vec_d[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
+vec[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
 # vec_d[['w', 'w_corr', 'w_desp', 'uU']].plot(ax=axes[2])
-vec_d[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
+vec[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
 
 plt.tight_layout()
 plt.show()
