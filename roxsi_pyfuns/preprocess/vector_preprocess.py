@@ -424,11 +424,13 @@ if __name__ == '__main__':
         if config.lower() == 'vert':
             # Vertical tilt sensor - use compass-measured headings
             print('Vertical tilt sensor')
-            heading_deg = int(
+            heading_deg = float(
                 dfm[dfm['mooring_ID']=='L1v01']['notes'].item().split(' ')[-1]
                 )
+            print('heading (deg): ', heading_deg)
             # Make array of constant heading
             heading = np.ones_like(vec['heading'].values) * heading_deg
+            print('heading: ', heading)
         else:
             # Use sensor-read headings
             heading = vec['heading']
