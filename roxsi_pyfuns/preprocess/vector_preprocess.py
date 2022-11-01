@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from datetime import datetime as DT
 from cftime import date2num, num2date
 from roxsi_pyfuns import despike as rpd
@@ -20,7 +21,7 @@ class ADV():
     Main ADV class
     """
     def __init__(self, datadir, mooring_id, fs=16, burstlen=1200, magdec=12.86,
-                 outdir=None):
+                 outdir=None, mooring_info=None, patm=None):
         """
         Initialize Vector ADV class.
 
@@ -32,6 +33,8 @@ class ADV():
             burstlen - scalar; burst length (sec)
             outdir - str; if None, save output files in self.datadir,
                      else, specify outdir
+            mooring_info - str; path to mooring info excel file (optional)
+            patm - pd.DataFrame time series of atmospheric pressure (optional)
         """
         self.datadir = datadir
         self.mid = mooring_id
@@ -47,6 +50,14 @@ class ADV():
             self.outdir = outdir
         # Get raw data filenames
         self._fns_from_mid()
+        # Read mooring info excel file if provided
+        if mooring_info is not None:
+            self.dfm = pd.read_excel(mooring_info, 
+                                     parse_dates=['record_start', 'record_end'])
+        else:
+            self.dfm = None
+        # Atmospheric pressure time series, if provided
+        self.patm = patm
 
 
     def _fns_from_mid(self):
@@ -61,7 +72,8 @@ class ADV():
 
         
     def loaddata(self, datestr=None, despike_corr=True, despike_GN02=True,
-                 interp='linear', rec_start=None, rec_end=None, ncout=True):
+                 interp='linear', rec_start=None, rec_end=None, ncout=True,
+                 p2eta=True):
         """
         Read raw data from chosen mooring ID into pandas
         dataframe. Header info can be found in .hdr files.
@@ -84,6 +96,8 @@ class ADV():
                       after given timestamp.
             ncout - bool; if True, saves output as netcdf file and returns
                     xarray.Dataset instead of pandas.DataFrame.
+            p2eta - bool; if True, transforms pressure measurements to sea-
+                    surface elevation using linear wave theory.
         """
         # Define column names (see .hdr files for info)
         cols_dat = ['burst', 'ensemble', 'u', 'v', 'w', 
@@ -101,7 +115,7 @@ class ADV():
         if datestr is not None:
             # Define daily netcdf filename
             # Note that datestr format must be "yyyymmdd"
-            fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_Vec_{}.nc'.format(
+            fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
                 self.mid))
             # Read netcdf file if it exists
             if os.path.isfile(fn_nc):
@@ -141,20 +155,17 @@ class ADV():
         dfd_list = []
         # Iterate over days (i is date index starting at 0)
         dp_cnt = 0 # daily data point counter
-        for i, date in enumerate(days[0:2]):
+        for i, date in tqdm(enumerate([days[0]])):
             # Copy daily (d) segment from sen dataframe
             sen_d = sen.loc[DT.strftime(date, '%Y-%m-%d')].copy()
             # Calculate number of bursts in the current day
             Nsen = self.burstlen+1 # Nortek adds +1s to burst
             Nb = int(len(sen_d) / Nsen) 
-            print('Nb: ', Nb)
             # Take out the same number of bursts from data
             Nd = self.burstlen * self.fs # Number of data samples per burst
-            print('Nd: ', Nd)
             dp = int(Nb * Nd) # Number of data points in the current day
             # Take out current date (not necessarily a full day)
             data_d = data.iloc[dp_cnt:(dp_cnt+dp)].copy()
-            print('len(data_d): {} \n'.format(len(data_d)))
             dp_cnt += dp # Increase counter
             # Iterate over individual bursts of data
             uvw_dfs = [] # Empty list to store u,v,w dataframes for merging
@@ -180,7 +191,6 @@ class ADV():
                 #  measurement."
                 t0b += pd.Timedelta(seconds=self.dt/2) # Add a half timestep
                 t1b += pd.Timedelta(seconds=self.dt/2) # Add a half timestep
-                print('{} {}'.format(t0b, t1b))
                 # Make burst timestamps using pre-defined sampling rate
                 burst_index = pd.date_range(t0b, t1b, freq='{}S'.format(self.dt))
                 burst_index = burst_index[:-1] # Correct length
@@ -205,6 +215,10 @@ class ADV():
                 if despike_GN02:
                     # Despike velocities following Goring and Nikora (2002)
                     self.despike_GN02(burst, corrd=corrd, interp=interp)
+                
+                # If requested, transform pressure to sea-surface elevation
+                if p2eta:
+                    burst['eta_lin'] = self.p2eta_lin(burst['pressure'])
 
                 # Save burst df to list for merging
                 uvw_dfs.append(burst)
@@ -221,7 +235,15 @@ class ADV():
         # Merge daily dataframes to full dataframe
         vec = pd.concat(dfd_list)
 
-        return vec
+        # Save to netcdf if requested
+        if ncout:
+            print('Converting to netcdf ...')
+            ds = self.df2nc(vec)
+            # Return xr.Dataset
+            return ds
+        else:
+            # Else, return pd.Dataframe
+            return vec
     
 
     def despike_correlations(self, df, interp='linear'):
@@ -308,28 +330,85 @@ class ADV():
             df['{}_desp'.format(k)] = vel
     
 
-    def pd2nc(self, df, df_attrs, ref_date=pd.Timestamp('1970-01-01'), 
-              overwrite=False):
+    def p2eta_lin(self, pt, rho0=1025, grav=9.81):
         """
-        Convert and save pd.DataFrame of Vector data to netcdf 
-        format.
+        Use linear transfer function to reconstruct sea-surface
+        elevation time series from sub-surface pressure measurements.
+
+        Requires self.patm dataframe of atmospheric pressure.
 
         Parameters:
-            df - input pd.DataFrame to convert
-            df_attrs - pd.DataFrame with attribute info
+            pt - pd.Series; time series of water pressure
+            rho0 - scalar; water density (kg/m^3)
+            grav - scalar; gravitational acceleration (m/s^2)
+        """
+        # Check if atmospheric pressure time series available
+        if self.patm is None:
+            raise ValueError('Must provide self.patm dataframe.')
+        
+        # Copy input
+        pw = pt.copy()
+        
+        # Interpolate atmospheric pressure to water pressure time index
+        dfa = self.patm.copy() # Make copy
+        dfa.reindex(pt.index, method=None).interpolate()
+
+        # Concatenate dataframes
+        pw = pd.concat([pw, dfa])
+
+        # Convert from hPa to meters (pressure head)
+        factor = rho0*grav/10000.0
+        pw['pwater'] = pw['pressure'] - pw['hpa']
+        # Remove negative values
+        ii = np.where(pw['pwater']<0)[0]
+        pw['pwater'][ii] = 0
+        pw['pwater'] /= factor
+
+
+
+        return pw['eta']
+
+        
+    
+
+    def df2nc(self, df, ref_date=pd.Timestamp('2022-06-25'), 
+              overwrite=True, crop=True, fillvalue=-9999.):
+        """
+        Convert and save pd.DataFrame of Vector data to netcdf 
+        format following CF conventions.
+
+        Parameters:
+            df - input pd.DataFrame to convert. Should be produced by 
+                 self.loaddata()
             ref_date - reference date to use for time axis
             overwrite - bool; if True, overwrites pre-existing netcdf file
+            crop - bool; if True, crops time series using record_start and
+                   record_end fields from mooring info excel file (self.dfm)
+            fillvalue - scalar; fill value to denote missing values
         """
         # Define standard output filename
-        fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_Vec_{}.nc'.format(
+        fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
             self.mid))
         # Check if file already exists
         if os.path.isfile(fn_nc) and not overwrite:
             # Read and return existing dataset
             print('Requested netCDF file already exists. ' + 
-                  'Set overwrite=True to overwrite')
+                  'Set overwrite=True to overwrite.')
             ds = xr.open_dataset(fn_nc)
             return ds
+        
+        # Crop input dataframe if requested and sel.dfm exists
+        if crop and self.dfm is not None:
+            print('Cropping time series ...')
+            t0n = pd.Timestamp(
+                self.dfm[self.dfm['mooring_ID']==self.mid]['record_start'].item())
+            t1n = pd.Timestamp(
+                self.dfm[self.dfm['mooring_ID']==self.mid]['record_end'].item())
+            # Crop dataframe
+            df = df.loc[t0n:t1n]
+
+        # Set requested fill value
+        df = df.fillna(fillvalue)
         
         # Convert time array to numerical format
         time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
@@ -341,16 +420,137 @@ class ADV():
         #                         only_use_python_datetimes=True, 
         #                         only_use_cftime_datetimes=False)
         #                         )
-        # Convert arrays into Xarray Dataset¶
-        ds = xr.Dataset({'velocity': (['time'], temps, {'units':'Kelvin'}),
-                         'pressure':  (['time'], temps, {'units':'Kelvin'})},
-                        coords={'x_dist': (['x'], x, {'units':'km'}),
-                                'y_dist': (['y'], y, {'units':'km'}),
-                                'pressure': (['z'], press, {'units':'hPa'}),
-                                'forecast_time': (['time'], times)
-                        })
-        
+        # Convert arrays into Xarray Dataset
+        ds = xr.Dataset(
+            data_vars={'ux': (['time'], df['u']),
+                       'uy': (['time'], df['v']),
+                       'uz': (['time'], df['w']),
+                       'uxd': (['time'], df['u_desp']),
+                       'uyd': (['time'], df['v_desp']),
+                       'uzd': (['time'], df['w_desp']),
+                       'pressure':  (['time'], df['pressure']),
+                       'heading_ang':  (['time'], df['heading']),
+                       'pitch_ang':  (['time'], df['pitch']),
+                       'roll_ang':  (['time'], df['roll']),
+                       'lat': (['lat'], [36.6250768146788]),
+                       'lon': (['lon'], [-121.94334673203694]),
+                       },
+            coords={'time': (['time'], time_vals),}
+            )
+        # Set units
+        ds.ux.attrs['units'] = 'm/s'
+        ds.uy.attrs['units'] = 'm/s'
+        ds.uz.attrs['units'] = 'm/s'
+        ds.uxd.attrs['units'] = 'm/s'
+        ds.uyd.attrs['units'] = 'm/s'
+        ds.uzd.attrs['units'] = 'm/s'
+        ds.heading_ang.attrs['units'] = 'degrees'
+        ds.pitch_ang.attrs['units'] = 'degrees'
+        ds.roll_ang.attrs['units'] = 'degrees'
+        ds.pressure.attrs['units'] = 'hPa'
+        ds.time.encoding['units'] = time_units
+        ds.time.attrs['units'] = time_units
+        ds.time.attrs['standard_name'] = 'time'
+        ds.time.attrs['long_name'] = 'Local time (PDT), midpoints of sampling intervals'
+        ds.lat.attrs['standard_name'] = 'latitude'
+        ds.lat.attrs['long_name'] = 'Approximate latitude of small-scale array rock summit'
+        ds.lat.attrs['units'] = 'degrees_north'
+        ds.lat.attrs['valid_min'] = -90.0
+        ds.lat.attrs['valid_max'] = 90.0
+        ds.lon.attrs['standard_name'] = 'longitude'
+        ds.lon.attrs['long_name'] = 'Approximate longitude of small-scale array rock summit'
+        ds.lon.attrs['units'] = 'degrees_east'
+        ds.lon.attrs['valid_min'] = -180.0
+        ds.lon.attrs['valid_max'] = 180.0
 
+        # Variable attributes
+        ds.ux.attrs['standard_name'] = 'sea_water_x_velocity'
+        ds.uy.attrs['standard_name'] = 'sea_water_y_velocity'
+        ds.uz.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.uxd.attrs['standard_name'] = 'sea_water_x_velocity'
+        ds.uyd.attrs['standard_name'] = 'sea_water_y_velocity'
+        ds.uzd.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.heading_ang.attrs['standard_name'] = 'platform_orientation'
+        ds.pitch_ang.attrs['standard_name'] = 'platform_pitch_angle'
+        ds.roll_ang.attrs['standard_name'] = 'platform_roll_angle'
+        ds.pressure.attrs['standard_name'] = 'sea_water_pressure'
+        # Long names of velocity components
+        ln_ux = 'x component of raw velocity in instrument reference frame'
+        ln_uy = 'y component of raw velocity in instrument reference frame'
+        ln_uz = 'z component of raw velocity in instrument reference frame'
+        ds.ux.attrs['long_name'] = ln_ux
+        ds.uy.attrs['long_name'] = ln_uy
+        ds.uz.attrs['long_name'] = ln_uz
+        ln_uxd = 'x component of despiked velocity in instrument reference frame'
+        ln_uyd = 'y component of despiked velocity in instrument reference frame'
+        ln_uzd = 'z component of despiked velocity in instrument reference frame'
+        ds.uxd.attrs['long_name'] = ln_uxd
+        ds.uyd.attrs['long_name'] = ln_uyd
+        ds.uzd.attrs['long_name'] = ln_uzd
+        ln_head = ('Linearly interpolated instrument heading time series in ' + 
+                   'instrument reference frame')
+        ds.heading_ang.attrs['long_name'] = ln_head
+        ln_pitch = ('Linearly interpolated instrument pitch time series in ' + 
+                    'instrument reference frame')
+        ds.pitch_ang.attrs['long_name'] = ln_pitch
+        ln_roll = ('Linearly interpolated instrument roll time series in ' + 
+                   'instrument reference frame')
+        ds.roll_ang.attrs['long_name'] = ln_roll
+        ln_pres = ('Pressure due to overlying sea water, air and ' + 
+                   'any other medium that may be present')
+        ds.pressure.attrs['long_name'] = ln_pres
+        
+        # Global attributes
+        ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
+                             'Vector {}'.format(self.mid))
+        ds.attrs['summary'] =  "Nearshore acoustic doppler velocimeter measurements."
+        ds.attrs['instrument'] = 'Nortek Vector ADV'
+        ds.attrs['mooring_ID'] = self.mid
+        # Read more attributes from mooring info file if provided
+        if self.dfm is not None:
+            serial_no = str(self.dfm[self.dfm['mooring_ID']==self.mid]['serial_number'].item())
+            ds.attrs['serial_number'] = serial_no
+            comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
+            ds.attrs['comment'] = comments
+            config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
+            ds.attrs['configurations'] = config
+            fs = self.dfm[self.dfm['mooring_ID']==self.mid]['sampling_freq'].item()
+            ds.attrs['sampling_frequency'] = '{} Hz'.format(fs)
+        ds.attrs['magnetic_declination'] = '{} degrees East'.format(self.magdec)
+        ds.attrs['despiking'] = ('3D phase-space despiking of velocities ' +
+                                 'following Goring and Nikora (2002), ' +
+                                 'including modifications by Wahl (2003) ' +
+                                 'and Mori et al. (2007).')
+        ds.attrs['Conventions'] = 'CF-1.8'
+        ds.attrs['featureType'] = "timeSeries"
+        ds.attrs['source'] =  "Sub-surface observation"
+        ds.attrs['date_created'] = str(DT.utcnow()) + ' UTC'
+        ds.attrs['references'] = 'https://github.com/mikapm/pyROXSI'
+        ds.attrs['creator_name'] = "Mika P. Malila"
+        ds.attrs['creator_email'] = "mikapm@unc.edu"
+        ds.attrs['institution'] = "University of North Carolina at Chapel Hill"
+
+        # Set encoding before saving
+        encoding = {'time': {'zlib': False, '_FillValue': None},
+                    'lat': {'zlib': False, '_FillValue': None},
+                    'lon': {'zlib': False, '_FillValue': None},
+                    'ux': {'_FillValue': fillvalue},        
+                    'uy': {'_FillValue': fillvalue},        
+                    'uz': {'_FillValue': fillvalue},        
+                    'uxd': {'_FillValue': fillvalue},        
+                    'uyd': {'_FillValue': fillvalue},        
+                    'uzd': {'_FillValue': fillvalue},        
+                    'heading_ang': {'_FillValue': fillvalue},        
+                    'pitch_ang': {'_FillValue': fillvalue},        
+                    'roll_ang': {'_FillValue': fillvalue},        
+                    'pressure': {'_FillValue': fillvalue},
+                   }     
+
+        # Save dataset in netcdf format
+        print('Saving netcdf ...')
+        ds.to_netcdf(fn_nc, encoding=encoding)
+
+        return ds
 
 
 # Main script
@@ -360,7 +560,6 @@ if __name__ == '__main__':
     """
     import sys
     import glob
-    from tqdm import tqdm
     from scipy.io import loadmat
     from argparse import ArgumentParser
 
@@ -421,10 +620,30 @@ if __name__ == '__main__':
     outdir = os.path.join(args.dr, 'Level1')
     figdir = os.path.join(outdir, 'img')
 
-    # Read mooring info excel file
+    # Mooring info excel file path (used when initializing ADV class)
     rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
     fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
-    dfm = pd.read_excel(fn_minfo, parse_dates=['record_start', 'record_end'])
+
+    # Read atmospheric pressure time series
+    fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
+    if not os.path.isfile(fn_patm):
+        # csv file does not exist -> read mat file and generate dataframe
+        fn_matp = os.path.join(rootdir, 'noaa_atm_pres_simple.mat')
+        mat = loadmat(fn_matp)
+        mat_pres = mat['A']['atm_pres'].item().squeeze()
+        mat_time = mat['A']['time_vec'].item().squeeze() # In Matlab char() format
+        # Make into pandas dataframe
+        dfa = pd.DataFrame(data={'hpa':mat_pres}, 
+                           index=pd.to_datetime(mat_time))
+        dfa.index.rename('time', inplace=True)
+        # convert from mbar to hpa
+        dfa['hpa'] /= 100
+        dfa['hpa'] -= 0.032 # Empirical correction factor
+
+        # Save as csv
+        dfa.to_csv(fn_patm)
+    else:
+        dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
 
     # Check if processing just one mooring or all
     if args.mid == 'ALL':
@@ -438,7 +657,8 @@ if __name__ == '__main__':
     # Iterate over mooring ID(s)
     for mid in tqdm(mids):
         # Initialize ADV class and read raw data
-        adv = ADV(datadir=args.dr, mooring_id=mid, magdec=args.magdec)
+        adv = ADV(datadir=args.dr, mooring_id=mid, magdec=args.magdec,
+                  mooring_info=fn_minfo, outdir=outdir, patm=dfa)
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data (specific date or all)
@@ -449,93 +669,93 @@ if __name__ == '__main__':
             # Read specified date
             vec = adv.loaddata(datestr=args.datestr)
         
-        # Rotate despiked velocities to (E,N,U) reference frame
-        vel_cols = ['u_desp', 'v_desp', 'w_desp']
-        # Take out velocity array
-        vel = vec[vel_cols].values
-        # Check if tilt sensor was vertical
-        config = dfm[dfm['mooring_ID']==mid]['config'].item().split(' ')[0]
-        if config.lower() == 'vert':
-            # Vertical tilt sensor - use compass-measured headings
-            print('Vertical tilt sensor')
-            heading_deg = float(
-                dfm[dfm['mooring_ID']=='L1v01']['notes'].item().split(' ')[-1]
-                )
-            print('heading (deg): ', heading_deg)
-            # Make array of constant heading
-            heading = np.ones_like(vec['heading'].values) * heading_deg
-            print('heading: ', heading)
-        else:
-            # Use sensor-read headings
-            heading = vec['heading']
-        # Rotate velocities
-        vel_enu = rpct.uvw2enu(vel, heading=heading,
-                               pitch=vec['pitch'], roll=vec['roll'],
-                               magdec=adv.magdec)
-        # Add rotated (despiked) velocities to dataframe
-        print('vel_enu shape: ', vel_enu.shape)
-        vec['uE'] = vel_enu[0,:]
-        vec['uN'] = vel_enu[1,:]
-        vec['uU'] = vel_enu[2,:]
-
-        # Plot heading, pitch & roll time series
-        if args.savefig:
-            # Define figure filename and check if it exists
-            if args.datestr is None:
-                fn_hpr = os.path.join(figdir, 'hpr_press_{}.pdf'.format(
-                    mid))
-            else:
-                fn_hpr = os.path.join(figdir, 'hpr_press_{}_{}.pdf'.format(
-                    mid, args.datestr))
-
-            if not os.path.isfile(fn_hpr) or args.overwrite_fig:
-                print('Plotting heading, pitch & roll timeseries ...')
-                fig, axes = plt.subplots(figsize=(12,5), nrows=2, sharex=True,
-                                         constrained_layout=True)
-                vec[['heading', 'pitch', 'roll']].plot(ax=axes[0])
-                vec['pressure'].plot(ax=axes[1])
-                axes[0].set_ylabel('Degrees')
-                axes[1].set_ylabel('dB')
-                axes[1].legend()
-                axes[0].set_title('Vector {} heading, pitch & roll + pressure'.format(
-                    mid))
-                # Save figure
-                plt.savefig(fn_hpr, bbox_inches='tight', dpi=300)
-                plt.close()
-
-        # Plot raw vs. QC'd timeseries
-        if args.savefig:
-            # Define figure filename and check if it exists
-            if args.datestr is None:
-                fn_vel = os.path.join(figdir, 'vel_desp_{}.pdf'.format(
-                    mid))
-            else:
-                fn_vel = os.path.join(figdir, 'vel_desp_{}_{}.pdf'.format(
-                    mid, args.datestr))
-
-            if not os.path.isfile(fn_vel) or args.overwrite_fig:
-                fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
-                                        sharex=True, sharey=True, 
-                                        constrained_layout=True)
-                vec[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
-                vec[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
-                vec[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
-                # Save figure
-                plt.savefig(fn_vel, bbox_inches='tight', dpi=300)
-                plt.close()
-
-# Test plot
-fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
-                         sharex=True, sharey=True, 
-                         constrained_layout=True)
-# vec_d[['u', 'u_corr', 'u_desp', 'uE']].plot(ax=axes[0])
-vec[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
-# vec_d[['v', 'v_corr', 'v_desp', 'uN']].plot(ax=axes[1])
-vec[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
-# vec_d[['w', 'w_corr', 'w_desp', 'uU']].plot(ax=axes[2])
-vec[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
-
-plt.tight_layout()
-plt.show()
-
-print('Done. \n')
+#        # Rotate despiked velocities to (E,N,U) reference frame
+#        vel_cols = ['u_desp', 'v_desp', 'w_desp']
+#        # Take out velocity array
+#        vel = vec[vel_cols].values
+#        # Check if tilt sensor was vertical
+#        config = dfm[dfm['mooring_ID']==mid]['config'].item().split(' ')[0]
+#        if config.lower() == 'vert':
+#            # Vertical tilt sensor - use compass-measured headings
+#            print('Vertical tilt sensor')
+#            heading_deg = float(
+#                dfm[dfm['mooring_ID']=='L1v01']['notes'].item().split(' ')[-1]
+#                )
+#            print('heading (deg): ', heading_deg)
+#            # Make array of constant heading
+#            heading = np.ones_like(vec['heading'].values) * heading_deg
+#            print('heading: ', heading)
+#        else:
+#            # Use sensor-read headings
+#            heading = vec['heading']
+#        # Rotate velocities
+#        vel_enu = rpct.uvw2enu(vel, heading=heading,
+#                               pitch=vec['pitch'], roll=vec['roll'],
+#                               magdec=adv.magdec)
+#        # Add rotated (despiked) velocities to dataframe
+#        print('vel_enu shape: ', vel_enu.shape)
+#        vec['uE'] = vel_enu[0,:]
+#        vec['uN'] = vel_enu[1,:]
+#        vec['uU'] = vel_enu[2,:]
+#
+#        # Plot heading, pitch & roll time series
+#        if args.savefig:
+#            # Define figure filename and check if it exists
+#            if args.datestr is None:
+#                fn_hpr = os.path.join(figdir, 'hpr_press_{}.pdf'.format(
+#                    mid))
+#            else:
+#                fn_hpr = os.path.join(figdir, 'hpr_press_{}_{}.pdf'.format(
+#                    mid, args.datestr))
+#
+#            if not os.path.isfile(fn_hpr) or args.overwrite_fig:
+#                print('Plotting heading, pitch & roll timeseries ...')
+#                fig, axes = plt.subplots(figsize=(12,5), nrows=2, sharex=True,
+#                                         constrained_layout=True)
+#                vec[['heading', 'pitch', 'roll']].plot(ax=axes[0])
+#                vec['pressure'].plot(ax=axes[1])
+#                axes[0].set_ylabel('Degrees')
+#                axes[1].set_ylabel('dB')
+#                axes[1].legend()
+#                axes[0].set_title('Vector {} heading, pitch & roll + pressure'.format(
+#                    mid))
+#                # Save figure
+#                plt.savefig(fn_hpr, bbox_inches='tight', dpi=300)
+#                plt.close()
+#
+#        # Plot raw vs. QC'd timeseries
+#        if args.savefig:
+#            # Define figure filename and check if it exists
+#            if args.datestr is None:
+#                fn_vel = os.path.join(figdir, 'vel_desp_{}.pdf'.format(
+#                    mid))
+#            else:
+#                fn_vel = os.path.join(figdir, 'vel_desp_{}_{}.pdf'.format(
+#                    mid, args.datestr))
+#
+#            if not os.path.isfile(fn_vel) or args.overwrite_fig:
+#                fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
+#                                        sharex=True, sharey=True, 
+#                                        constrained_layout=True)
+#                vec[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
+#                vec[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
+#                vec[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
+#                # Save figure
+#                plt.savefig(fn_vel, bbox_inches='tight', dpi=300)
+#                plt.close()
+#
+## Test plot
+#fig, axes = plt.subplots(figsize=(12,7), nrows=3, 
+#                         sharex=True, sharey=True, 
+#                         constrained_layout=True)
+## vec_d[['u', 'u_corr', 'u_desp', 'uE']].plot(ax=axes[0])
+#vec[['u', 'u_corr', 'u_desp']].plot(ax=axes[0])
+## vec_d[['v', 'v_corr', 'v_desp', 'uN']].plot(ax=axes[1])
+#vec[['v', 'v_corr', 'v_desp']].plot(ax=axes[1])
+## vec_d[['w', 'w_corr', 'w_desp', 'uU']].plot(ax=axes[2])
+#vec[['w', 'w_corr', 'w_desp']].plot(ax=axes[2])
+#
+#plt.tight_layout()
+#plt.show()
+#
+#print('Done. \n')
