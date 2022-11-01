@@ -10,8 +10,10 @@ import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 from datetime import datetime as DT
+from cftime import date2num, num2date
 from roxsi_pyfuns import despike as rpd
 from roxsi_pyfuns import coordinate_transforms as rpct
+from roxsi_pyfuns import transfer_functions as rptf
 
 class ADV():
     """
@@ -20,7 +22,7 @@ class ADV():
     def __init__(self, datadir, mooring_id, fs=16, burstlen=1200, magdec=12.86,
                  outdir=None):
         """
-        Initialize ADV class.
+        Initialize Vector ADV class.
 
         Parameters:
             datadir; str - Path to raw data directory
@@ -59,14 +61,14 @@ class ADV():
 
         
     def loaddata(self, datestr=None, despike_corr=True, despike_GN02=True,
-                 interp='linear', rec_start=None, rec_end=None):
+                 interp='linear', rec_start=None, rec_end=None, ncout=True):
         """
         Read raw data from chosen mooring ID into pandas
         dataframe. Header info can be found in .hdr files.
 
-        Raw data gets saved into netcdf files, with 1-Hz data from .sen
-        files (e.g. heading, pitch & roll) linearly interpolated to the 
-        sampling rate of the velocity data.
+        Raw data gets saved into netcdf files if desired, with 1-Hz 
+        data from .sen files (e.g. heading, pitch & roll) linearly 
+        interpolated to the sampling rate of the velocity data.
 
         Parameters:
             datestr - str (yyyymmdd); if not None, read only requested
@@ -80,6 +82,8 @@ class ADV():
                         prior to given timestamp.
             rec_end - pd.Timestamp; optional record end time, crops record
                       after given timestamp.
+            ncout - bool; if True, saves output as netcdf file and returns
+                    xarray.Dataset instead of pandas.DataFrame.
         """
         # Define column names (see .hdr files for info)
         cols_dat = ['burst', 'ensemble', 'u', 'v', 'w', 
@@ -97,7 +101,7 @@ class ADV():
         if datestr is not None:
             # Define daily netcdf filename
             # Note that datestr format must be "yyyymmdd"
-            fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_{}.nc'.format(
+            fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_Vec_{}.nc'.format(
                 self.mid))
             # Read netcdf file if it exists
             if os.path.isfile(fn_nc):
@@ -209,19 +213,10 @@ class ADV():
             uvw_d = pd.concat(uvw_dfs)
             # Same for interpolated sen (H,P,R,T) data
             hpr_d = pd.concat(hpr_dfs)
-
-
-
-            # Combine all dataframes into one
-            vec_d = pd.concat([uvw_d, hpr_d], axis=1)
-
+            # Combine both dataframes into one daily Vector dataframe
+            uvw_d = pd.concat([uvw_d, hpr_d], axis=1)
             # Append daily dataframe to list for merging of whole dataset
-            dfd_list.append(vec_d)
-
-            # Convert dataframe to xarray dataset and save to daily netcdf file
-            if datestr is None:
-                # At the end, return full dataset by concatenating daily datasets
-                ds_list = [] # Append daily datasets for merging
+            dfd_list.append(uvw_d)
 
         # Merge daily dataframes to full dataframe
         vec = pd.concat(dfd_list)
@@ -301,8 +296,10 @@ class ADV():
         
         # Iterate over velocity components
         for kv, k in zip(vels, ['u', 'v', 'w']):
-            vel = vels[kv]
+            vel = vels[kv] # Current velocity component
+            # Detect spikes using 3D phase space method
             mask = rpd.phase_space_3d(vel.values)
+            # Convert detected spikes to NaN
             vel[mask] = np.nan
             # Interpolate according to requested method
             vel.interpolate(method=interp, limit=sec_lim*self.fs, 
@@ -311,11 +308,48 @@ class ADV():
             df['{}_desp'.format(k)] = vel
     
 
-    def pd2nc(self, df):
+    def pd2nc(self, df, df_attrs, ref_date=pd.Timestamp('1970-01-01'), 
+              overwrite=False):
         """
         Convert and save pd.DataFrame of Vector data to netcdf 
         format.
+
+        Parameters:
+            df - input pd.DataFrame to convert
+            df_attrs - pd.DataFrame with attribute info
+            ref_date - reference date to use for time axis
+            overwrite - bool; if True, overwrites pre-existing netcdf file
         """
+        # Define standard output filename
+        fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_Vec_{}.nc'.format(
+            self.mid))
+        # Check if file already exists
+        if os.path.isfile(fn_nc) and not overwrite:
+            # Read and return existing dataset
+            print('Requested netCDF file already exists. ' + 
+                  'Set overwrite=True to overwrite')
+            ds = xr.open_dataset(fn_nc)
+            return ds
+        
+        # Convert time array to numerical format
+        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
+        time_vals = date2num(df.index.to_pydatetime(), 
+                             time_units, calendar='standard', 
+                             has_year_zero=True)
+        # To convert back to datetime64:
+        # pd.to_datetime(num2date(time_vals, time_units, 
+        #                         only_use_python_datetimes=True, 
+        #                         only_use_cftime_datetimes=False)
+        #                         )
+        # Convert arrays into Xarray Dataset¶
+        ds = xr.Dataset({'velocity': (['time'], temps, {'units':'Kelvin'}),
+                         'pressure':  (['time'], temps, {'units':'Kelvin'})},
+                        coords={'x_dist': (['x'], x, {'units':'km'}),
+                                'y_dist': (['y'], y, {'units':'km'}),
+                                'pressure': (['z'], press, {'units':'hPa'}),
+                                'forecast_time': (['time'], times)
+                        })
+        
 
 
 
