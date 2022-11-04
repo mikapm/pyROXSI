@@ -4,6 +4,7 @@ elevation.
 """
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import optimize
 from scipy.signal import hann
@@ -65,6 +66,48 @@ def waveno_full(omega, d, k0=None, **kwargs):
     k = optimize.newton(f, k0, args=(omega, d))
 
     return k
+
+def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
+    """
+    Returns hydrostatic pressure head in units of meters from water
+    pressure time series and atmospheric pressure time series.
+
+    Parameters:
+        pt - pd.Series; time series (w/ time index) of water pressure (hPa)
+        patm - pd.Series; time series of atmospheric pressure (hPa)
+        rho0 - scalar; water density (kg/m^3)
+        grav - scalar; gravitational acceleration (m/s^2)
+        interp - bool; if True, interpolate atmospheric pressure to 
+                 time index of water pressure.
+    Returns:
+        eta - pd.Series; time series of hydrostatic pressure head (m)
+    """
+    # Copy input series
+    pw = pt.copy()
+    pw = pw.to_frame(name='pressure') # Convert to dataframe
+    if patm is not None:
+        # Correct for atmospheric pressure
+        dfa = patm.copy()
+        if interp:
+            # Interpolate atmospheric pressure to water pressure time index
+            dfa = dfa.reindex(pt.index, method='bfill').interpolate()
+        # Concatenate input arrays
+        df = pd.concat([pw, dfa], axis=1)
+        # Correct for atmospheric pressure
+        df['eta_hyd'] = df['pressure'] - df['hpa']
+    else:
+        # Do not correct for atmospheric pressure
+        df = pw.copy()
+        df['eta_hyd'] = df['pressure'].copy()
+
+    # Convert from hPa to meters (pressure head)
+    factor = rho0*grav/10000.0
+    # Remove negative values
+    ii = np.where(df['eta_hyd']<0)[0]
+    df['eta_hyd'][ii] = 0
+    df['eta_hyd'] /= factor # Pressure head, unit [m]
+
+    return df['eta_hyd']
 
 
 class TRF():
@@ -154,11 +197,13 @@ class TRF():
             # Calculate wavenumbers using full dispersion relation
             ks = waveno_full(oms, d=dseg)
 
-            # Calculate pressure response factor Kp
-            Kp = np.cosh(ks*self.zp) / np.cosh(ks*dseg)
-            # Apply cutoff limits
+            # Apply cutoff limits to ks to avoid overflow warnings
             acidx = np.logical_or(freqs<fmin, freqs>fmax)
-            Kp[acidx] = 1 # No correction outside of range
+            ks_m = ks.copy()
+            ks_m[acidx] = 0 # No correction outside of range
+            # Calculate pressure response factor Kp
+            Kp = np.cosh(ks_m*self.zp) / np.cosh(ks_m*dseg)
+            # Kp[acidx] = 1 # No correction outside of range
             if att_corr:
                 # Apply attenuation correction factor to desired range
                 Kp[Kp < 1/max_att_corr] = 1 / max_att_corr
