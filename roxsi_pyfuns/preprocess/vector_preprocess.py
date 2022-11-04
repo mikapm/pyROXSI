@@ -1,13 +1,15 @@
 """
-Pre-process Nortek Vector ADV raw data. 
-Remove bad measurements based on correlations and despiking. 
-Save Level1 products as netcdf.
+* Pre-process Nortek Vector ADV raw data. 
+* Remove bad measurements based on correlations and despiking. 
+* Convert pressure to sea-surface elevation using linear TRF.
+* Save Level1 products as netcdf.
 """
 
 import os
 import numpy as np
 import pandas as pd
 import xarray as xr
+from scipy.signal import detrend
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from datetime import datetime as DT
@@ -20,14 +22,16 @@ class ADV():
     """
     Main ADV class
     """
-    def __init__(self, datadir, mooring_id, fs=16, burstlen=1200, magdec=12.86,
-                 outdir=None, mooring_info=None, patm=None):
+    def __init__(self, datadir, mooring_id, zp=0.08, fs=16, burstlen=1200, 
+                 magdec=12.86, outdir=None, mooring_info=None, patm=None, 
+                 instr='Nortek Vector'):
         """
         Initialize Vector ADV class.
 
         Parameters:
             datadir; str - Path to raw data directory
             mooring_id - str; ROXSI 2022 SSA mooring ID
+            zp - scalar; height of sensor above seabed (m)
             fs - scalar; sampling frequency (Hz)
             magdec - scalar; magnetic declination (deg E) of location
             burstlen - scalar; burst length (sec)
@@ -35,9 +39,11 @@ class ADV():
                      else, specify outdir
             mooring_info - str; path to mooring info excel file (optional)
             patm - pd.DataFrame time series of atmospheric pressure (optional)
+            instr - str; instrument name
         """
         self.datadir = datadir
         self.mid = mooring_id
+        self.zp = zp
         self.fs = fs
         self.dt = 1 / self.fs # Sampling rate (sec)
         self.magdec = magdec
@@ -50,6 +56,8 @@ class ADV():
             self.outdir = outdir
         # Get raw data filenames
         self._fns_from_mid()
+        # Read config info from .hdr file
+        self._read_hdr()
         # Read mooring info excel file if provided
         if mooring_info is not None:
             self.dfm = pd.read_excel(mooring_info, 
@@ -58,6 +66,7 @@ class ADV():
             self.dfm = None
         # Atmospheric pressure time series, if provided
         self.patm = patm
+        self.instr = instr
 
 
     def _fns_from_mid(self):
@@ -69,11 +78,53 @@ class ADV():
         self.fn_dat = os.path.join(self.datadir, '{}.dat'.format(self.mid))
         # Find correct .sen file with burst info
         self.fn_sen = os.path.join(self.datadir, '{}.sen'.format(self.mid))
+        # Find correct .sen file with Vector configuration info
+        self.fn_hdr = os.path.join(self.datadir, '{}.hdr'.format(self.mid))
+        # Define standard netcdf output filename
+        self.fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
+            self.mid))
 
+
+    def _read_hdr(self):
+        """
+        Read Nortek .hdr file for configuration info.
+        Returns self.hdr dataframe.
+        Example usage to get number of measurements in dataset:
+            self.hdr['value'].loc[self.hdr['field'] == 'Number_of_measurements']
+        """
+        # Read fixed-width formatted .hdr file to pandas dataframe
+        if os.path.isfile(self.fn_hdr):
+            self.hdr =pd.read_fwf(self.fn_hdr, colspecs=[(0,38), (38,None)], 
+                                skiprows=2,  header=None, 
+                                names=['field', 'value'])
+            # Convert field column names to lower case and combine words
+            # with underscores if possible
+            for i in range(len(self.hdr)):
+                try:
+                    self.hdr['field'].iloc[i] = self.hdr['field'].iloc[i].lower().replace(
+                        ' ', '_')
+                except:
+                    pass
+            # Check that sampling rate is consistent with user-provided value
+            fs_hdr = int(self.hdr['value'][self.hdr['field']=='sampling_rate'].item().split(
+                ' ')[0]) # Sampling rate from .hdr file
+            assert self.fs == fs_hdr, \
+                "Given sampling rate fs={} is not consistent with value in .hdr file".format(
+                    self.fs)
+            # Also check that burst length is consistent with .hdr file
+            bl_hdr = int(self.hdr['value'][self.hdr['field']=='samples_per_burst'].item().split(
+                ' ')[0]) # Sampling rate from .hdr file
+            bl_in = int(self.fs * self.burstlen) # Input burst length (no. of samples)
+            assert bl_in == bl_hdr, \
+                "Given sampling rate fs={} is not consistent with value in .hdr file".format(
+                    self.fs)
+        else:
+            self.hdr = None
         
-    def loaddata(self, datestr=None, despike_corr=True, despike_GN02=True,
-                 interp='linear', rec_start=None, rec_end=None, ncout=True,
-                 p2eta=True):
+        
+    def loaddata(self, despike_corr=True, despike_GN02=True,
+                 interp='linear', rec_start=None, rec_end=None,
+                 p2eta=True, savenc=True, overwrite=False):
         """
         Read raw data from chosen mooring ID into pandas
         dataframe. Header info can be found in .hdr files.
@@ -94,10 +145,11 @@ class ADV():
                         prior to given timestamp.
             rec_end - pd.Timestamp; optional record end time, crops record
                       after given timestamp.
-            ncout - bool; if True, saves output as netcdf file and returns
-                    xarray.Dataset instead of pandas.DataFrame.
             p2eta - bool; if True, transforms pressure measurements to sea-
                     surface elevation using linear wave theory.
+            savenc - bool; if True, saves output dataset as netcdf.
+            overwrite - bool; if True, overwrites any existing netcdf file.
+                        Else, reads and returns existing file if available.
         """
         # Define column names (see .hdr files for info)
         cols_dat = ['burst', 'ensemble', 'u', 'v', 'w', 
@@ -111,139 +163,128 @@ class ADV():
                     'tempC', 'analog_in', 'checksum', 
                     ] # .sen file columns
 
-        # Are we requesting a specific date?
-        if datestr is not None:
-            # Define daily netcdf filename
-            # Note that datestr format must be "yyyymmdd"
-            fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
-                self.mid))
-            # Read netcdf file if it exists
-            if os.path.isfile(fn_nc):
-                xr.read_csv(fn_nc)
-            else:
-                # Must generate netcdf first
-                raise ValueError('Netcdf file for {} does not exist yet.'.format(
-                    datestr))
+        # Read and return netcdf file if it already exists
+        if os.path.isfile(self.fn_nc) and not overwrite:
+            ds = xr.open_dataset(self.fn_nc)
+            return ds
+        else:
+            # Read data into pandas dataframe
+            data = pd.read_table(self.fn_dat, names=cols_dat, header=None,
+                delimiter=' ', skipinitialspace=True)
 
-        # Read data into pandas dataframe
-        data = pd.read_table(self.fn_dat, names=cols_dat, header=None,
-            delimiter=' ', skipinitialspace=True)
+            # Read sensor info into another dataframe from .sen file
+            sen = pd.read_table(self.fn_sen, names=cols_sen, header=None,
+                delimiter=' ', skipinitialspace=True)
+            # Parse dates from relevant columns
+            date_cols = ['year','month','day','hour','minute','second']
+            sen['time'] = pd.to_datetime(sen[date_cols])
+            # Set timestamp as index
+            sen.set_index('time', inplace=True)
 
-        # Read sensor info into another dataframe from .sen file
-        sen = pd.read_table(self.fn_sen, names=cols_sen, header=None,
-            delimiter=' ', skipinitialspace=True)
-        # Parse dates from relevant columns
-        date_cols = ['year','month','day','hour','minute','second']
-        sen['time'] = pd.to_datetime(sen[date_cols])
-        # Set timestamp as index
-        sen.set_index('time', inplace=True)
+            # Split raw data into daily segments and save as netcdf
+            day0 = sen.index[0].day
+            month0 = sen.index[0].month
+            year0 = sen.index[0].year 
+            day1 = sen.index[-1].day
+            month1 = sen.index[-1].month
+            year1 = sen.index[-1].year 
+            # Start date
+            t0 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year0, month0, day0))
+            # End date
+            t1 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year1, month1, day1))
+            # Make time array
+            days = pd.date_range(t0, t1, freq='1D')
+            # Empty list to store daily dataframes for merging\
+            dfd_list = []
+            # Iterate over days (i is date index starting at 0)
+            dp_cnt = 0 # daily data point counter
+            for i, date in tqdm(enumerate(days)):
+                # Copy daily (d) segment from sen dataframe
+                sen_d = sen.loc[DT.strftime(date, '%Y-%m-%d')].copy()
+                # Calculate number of bursts in the current day
+                Nsen = self.burstlen+1 # Nortek adds +1s to burst
+                Nb = int(len(sen_d) / Nsen) 
+                # Take out the same number of bursts from data
+                Nd = self.burstlen * self.fs # Number of data samples per burst
+                dp = int(Nb * Nd) # Number of data points in the current day
+                # Take out current date (not necessarily a full day)
+                data_d = data.iloc[dp_cnt:(dp_cnt+dp)].copy()
+                dp_cnt += dp # Increase counter
+                # Iterate over individual bursts of data
+                uvw_dfs = [] # Empty list to store u,v,w dataframes for merging
+                hpr_dfs = [] # Empty list to store sen dataframes for merging
+                burst_cols = ['burst', 'u', 'v', 'w', 
+                            'corr1', 'corr2', 'corr3', 'pressure']
+                for bn, burst in enumerate(np.array_split(data_d[burst_cols], Nb)):
+                    # Take out corresponding sen burst
+                    senb_cols = ['heading', 'pitch', 'roll', 'tempC']
+                    burst_s = sen_d[senb_cols].iloc[Nsen*bn:Nsen*(bn+1)] 
+                    # Make burst time index at data sampling rate
+                    t0b = burst_s.index[0] # Burst index start time
+                    t1b = burst_s.index[-1] # Burst index end time
+                    # Velocity sampling starts at +2 sec from requested start time.
+                    # See:
+                    # https://support.nortekgroup.com/hc/en-us/articles/360029499432-
+                    # How-do-you-figure-out-the-time-to-assign-to-Vector-velocity-samples-
+                    t0b += pd.Timedelta(seconds=1) # Add one second
+                    t1b += pd.Timedelta(seconds=1) # Add one second
+                    # To get the most accurate velocity timestamps (from Nortek website):
+                    # "Since the Vector is pinging continuously during each sample, 
+                    #  the best time for the sample would be the midpoint of the 
+                    #  measurement."
+                    t0b += pd.Timedelta(seconds=self.dt/2) # Add a half timestep
+                    t1b += pd.Timedelta(seconds=self.dt/2) # Add a half timestep
+                    print('t0b: {}, t1b: {}'.format(t0b, t1b))
+                    # Make burst timestamps using pre-defined sampling rate
+                    burst_index = pd.date_range(t0b, t1b, freq='{}S'.format(self.dt))
+                    burst_index = burst_index[:-1] # Correct length
+                    # Set index to burst segment dataframe
+                    burst = burst.set_index(burst_index)
+                    burst.index = burst.index.rename('time')
+                    # Add a half timestep to sen burst index for reindexing
+                    burst_s.index += pd.Timedelta(seconds=self.dt/2) 
+                    # Interpolate (lin) 1-Hz sensor data to data burst sampling rate
+                    burst_si = burst_s.reindex(burst.index, method=None).interpolate()
+                    # Append interpolated sen burst to list
+                    hpr_dfs.append(burst_si)
 
-        # Split raw data into daily segments and save as netcdf
-        day0 = sen.index[0].day
-        month0 = sen.index[0].month
-        year0 = sen.index[0].year 
-        day1 = sen.index[-1].day
-        month1 = sen.index[-1].month
-        year1 = sen.index[-1].year 
-        # Start date
-        t0 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year0, month0, day0))
-        # End date
-        t1 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year1, month1, day1))
-        # Make time array
-        days = pd.date_range(t0, t1, freq='1D')
-        # Empty list to store daily dataframes for merging\
-        dfd_list = []
-        # Iterate over days (i is date index starting at 0)
-        dp_cnt = 0 # daily data point counter
-        for i, date in tqdm(enumerate([days[0]])):
-            # Copy daily (d) segment from sen dataframe
-            sen_d = sen.loc[DT.strftime(date, '%Y-%m-%d')].copy()
-            # Calculate number of bursts in the current day
-            Nsen = self.burstlen+1 # Nortek adds +1s to burst
-            Nb = int(len(sen_d) / Nsen) 
-            # Take out the same number of bursts from data
-            Nd = self.burstlen * self.fs # Number of data samples per burst
-            dp = int(Nb * Nd) # Number of data points in the current day
-            # Take out current date (not necessarily a full day)
-            data_d = data.iloc[dp_cnt:(dp_cnt+dp)].copy()
-            dp_cnt += dp # Increase counter
-            # Iterate over individual bursts of data
-            uvw_dfs = [] # Empty list to store u,v,w dataframes for merging
-            hpr_dfs = [] # Empty list to store sen dataframes for merging
-            burst_cols = ['burst', 'u', 'v', 'w', 
-                          'corr1', 'corr2', 'corr3', 'pressure']
-            for bn, burst in enumerate(np.array_split(data_d[burst_cols], Nb)):
-                # Take out corresponding sen burst
-                senb_cols = ['heading', 'pitch', 'roll', 'tempC']
-                burst_s = sen_d[senb_cols].iloc[Nsen*bn:Nsen*(bn+1)] 
-                # Make burst time index at data sampling rate
-                t0b = burst_s.index[0] # Burst index start time
-                t1b = burst_s.index[-1] # Burst index end time
-                # Velocity sampling starts at +2 sec from requested start time.
-                # See:
-                # https://support.nortekgroup.com/hc/en-us/articles/360029499432-
-                # How-do-you-figure-out-the-time-to-assign-to-Vector-velocity-samples-
-                t0b += pd.Timedelta(seconds=1) # Add one second
-                t1b += pd.Timedelta(seconds=1) # Add one second
-                # To get the most accurate velocity timestamps (from Nortek website):
-                # "Since the Vector is pinging continuously during each sample, 
-                #  the best time for the sample would be the midpoint of the 
-                #  measurement."
-                t0b += pd.Timedelta(seconds=self.dt/2) # Add a half timestep
-                t1b += pd.Timedelta(seconds=self.dt/2) # Add a half timestep
-                # Make burst timestamps using pre-defined sampling rate
-                burst_index = pd.date_range(t0b, t1b, freq='{}S'.format(self.dt))
-                burst_index = burst_index[:-1] # Correct length
-                # Set index to burst segment dataframe
-                burst = burst.set_index(burst_index)
-                burst.index = burst.index.rename('time')
-                # Add a half timestep to sen burst index for reindexing
-                burst_s.index += pd.Timedelta(seconds=self.dt/2) 
-                # Interpolate (lin) 1-Hz sensor data to data burst sampling rate
-                burst_si = burst_s.reindex(burst.index, method=None).interpolate()
-                # Append interpolated sen burst to list
-                hpr_dfs.append(burst_si)
+                    # If requested, apply QC procedures on burst
+                    if despike_corr:
+                        # Use correlations to get rid of bad measurements following
+                        # Elgar et al. (2001, Jtech)
+                        self.despike_correlations(burst, interp=interp)
+                        corrd = True # Input arg to despike_GN02()
+                    else:
+                        corrd = False # Velocities are not corrected for correlations
+                    if despike_GN02:
+                        # Despike velocities following Goring and Nikora (2002)
+                        self.despike_GN02(burst, corrd=corrd, interp=interp)
+                    
+                    # If requested, transform pressure to sea-surface elevation
+                    if p2eta:
+                        burst['eta_lin'], burst['eta_hyd'] = self.p2eta_lin(
+                            burst['pressure'], detrend_out=True, return_hyd=True)
 
-                # If requested, apply QC procedures on burst
-                if despike_corr:
-                    # Use correlations to get rid of bad measurements following
-                    # Elgar et al. (2001, Jtech)
-                    self.despike_correlations(burst, interp=interp)
-                    corrd = True # Input arg to despike_GN02()
-                else:
-                    corrd = False # Velocities are not corrected for correlations
-                if despike_GN02:
-                    # Despike velocities following Goring and Nikora (2002)
-                    self.despike_GN02(burst, corrd=corrd, interp=interp)
-                
-                # If requested, transform pressure to sea-surface elevation
-                if p2eta:
-                    burst['eta_lin'] = self.p2eta_lin(burst['pressure'])
+                    # Save burst df to list for merging
+                    uvw_dfs.append(burst)
 
-                # Save burst df to list for merging
-                uvw_dfs.append(burst)
+                # Merge burst dataframes to one daily dataframe
+                uvw_d = pd.concat(uvw_dfs)
+                # Same for interpolated sen (H,P,R,T) data
+                hpr_d = pd.concat(hpr_dfs)
+                # Combine both dataframes into one daily Vector dataframe
+                uvw_d = pd.concat([uvw_d, hpr_d], axis=1)
+                # Append daily dataframe to list for merging of whole dataset
+                dfd_list.append(uvw_d)
 
-            # Merge burst dataframes to one daily dataframe
-            uvw_d = pd.concat(uvw_dfs)
-            # Same for interpolated sen (H,P,R,T) data
-            hpr_d = pd.concat(hpr_dfs)
-            # Combine both dataframes into one daily Vector dataframe
-            uvw_d = pd.concat([uvw_d, hpr_d], axis=1)
-            # Append daily dataframe to list for merging of whole dataset
-            dfd_list.append(uvw_d)
+            # Merge daily dataframes to full dataframe
+            vec = pd.concat(dfd_list)
 
-        # Merge daily dataframes to full dataframe
-        vec = pd.concat(dfd_list)
-
-        # Save to netcdf if requested
-        if ncout:
+            # Save to netcdf
             print('Converting to netcdf ...')
             ds = self.df2nc(vec)
             # Return xr.Dataset
             return ds
-        else:
-            # Else, return pd.Dataframe
-            return vec
     
 
     def despike_correlations(self, df, interp='linear'):
@@ -287,7 +328,8 @@ class ADV():
             df['{}_corr'.format(kv)] = vel
 
 
-    def despike_GN02(self, df, interp='linear', sec_lim=1, corrd=True):
+    def despike_GN02(self, df, interp='linear', sec_lim=2, corrd=True, 
+                     min_new_spikes=10, max_iter=3):
         """
         Despike Nortek Vector velocities using low correlation values
         to discard unreliable measurements following the Goring and
@@ -302,6 +344,9 @@ class ADV():
             sec_lim - scalar; maximum gap size to interpolate (sec)
             corrd - bool; if True, input velocities are correlation-
                     corrected by self.despike_correlations()
+            min_new_spikes - int; iterate until number of new spikes detected 
+                             is lower than this value. 
+            max_iter - int; maximum number of despiking iterations
         
         Returns:
             df - Updated dataframe with despiked velocity columns added.
@@ -319,60 +364,79 @@ class ADV():
         # Iterate over velocity components
         for kv, k in zip(vels, ['u', 'v', 'w']):
             vel = vels[kv] # Current velocity component
-            # Detect spikes using 3D phase space method
-            mask = rpd.phase_space_3d(vel.values)
-            # Convert detected spikes to NaN
-            vel[mask] = np.nan
-            # Interpolate according to requested method
-            vel.interpolate(method=interp, limit=sec_lim*self.fs, 
-                            inplace=True)
+            # Initialize counter of new spikes detected
+            n_spikes = min_new_spikes + 1
+            # Initialize iteraction counter
+            cnt = 0
+            # Iterate until sufficiently low number of new spikes detected
+            while n_spikes > min_new_spikes or cnt < max_iter:
+                # Detect spikes using 3D phase space method
+                mask = rpd.phase_space_3d(vel.values)
+                # Convert detected spikes to NaN
+                vel[mask] = np.nan
+                # Interpolate according to requested method
+                vel.interpolate(method=interp, limit=sec_lim*self.fs, 
+                                inplace=True)
+                # Count number of spikes detected
+                n_spikes = mask.sum()
+                # Add to iteration counter
+                cnt += 1
+                if n_spikes < min_new_spikes or cnt >= max_iter:
+                    break
             # Add corrected velocity column to input df
             df['{}_desp'.format(k)] = vel
     
 
-    def p2eta_lin(self, pt, rho0=1025, grav=9.81):
+    def p2eta_lin(self, pt, rho0=1025, grav=9.81, M=512, fmin=0.05, fmax=0.33, 
+                  att_corr=True, detrend_out=True, return_hyd=True):
         """
         Use linear transfer function to reconstruct sea-surface
         elevation time series from sub-surface pressure measurements.
 
-        Requires self.patm dataframe of atmospheric pressure.
+        If self.patm dataframe of atmospheric pressure is not available,
+        this function assumes that the input time series is the hydrostatic 
+        pressure.
 
         Parameters:
             pt - pd.Series; time series of water pressure
             rho0 - scalar; water density (kg/m^3)
             grav - scalar; gravitational acceleration (m/s^2)
+            M - int; window segment length (512 by default)
+            fmin - scalar; min. cutoff frequency
+            fmax - scalar; max. cutoff frequency
+            att_corr - bool; if True, applies attenuation correction
+            detrend_out - bool; if True, returns detrended signal
+            return_hyd - bool; if True, returns also hydrostatic pressure head
         """
-        # Check if atmospheric pressure time series available
-        if self.patm is None:
-            raise ValueError('Must provide self.patm dataframe.')
-        
         # Copy input
         pw = pt.copy()
-        
-        # Interpolate atmospheric pressure to water pressure time index
-        dfa = self.patm.copy() # Make copy
-        dfa.reindex(pt.index, method=None).interpolate()
+        pw = pw.to_frame(name='pressure') # Convert to dataframe
+        # Use hydrostatic assumption to get pressure head with unit [m]
+        pw['eta_hyd'] = rptf.eta_hydrostatic(pw['pressure'], self.patm, 
+            rho0=rho0, grav=grav, interp=True)
+        # Check if hydrostatic pressure is ever above 0
+        if pw['eta_hyd'].max() == 0.0:
+            print('Instrument most likely not in water')
+            # Return NaN array for linear sea surface elevations
+            pw['eta_lin'] = np.ones_like(pw['eta_hyd'].values) * np.nan
+        else:
+            # Apply linear transfer function from p->eta
+            trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+            pw['eta_lin'] = trf.p2eta_lin(pw['eta_hyd'], M=M, fmin=fmin, fmax=fmax,
+                att_corr=att_corr)
+            # Detrend if requested
+            if detrend_out:
+                pw['eta_lin'] = detrend(pw['eta_lin'].values)
 
-        # Concatenate dataframes
-        pw = pd.concat([pw, dfa])
-
-        # Convert from hPa to meters (pressure head)
-        factor = rho0*grav/10000.0
-        pw['pwater'] = pw['pressure'] - pw['hpa']
-        # Remove negative values
-        ii = np.where(pw['pwater']<0)[0]
-        pw['pwater'][ii] = 0
-        pw['pwater'] /= factor
-
-
-
-        return pw['eta']
-
-        
+        if return_hyd:
+            # Return also hydrostatic pressure head
+            return pw['eta_lin'], pw['eta_hyd']
+        else:
+            return pw['eta_lin']
     
 
     def df2nc(self, df, ref_date=pd.Timestamp('2022-06-25'), 
-              overwrite=True, crop=True, fillvalue=-9999.):
+              overwrite=False, crop=True, fillvalue=-9999.):
         """
         Convert and save pd.DataFrame of Vector data to netcdf 
         format following CF conventions.
@@ -386,15 +450,12 @@ class ADV():
                    record_end fields from mooring info excel file (self.dfm)
             fillvalue - scalar; fill value to denote missing values
         """
-        # Define standard output filename
-        fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
-            self.mid))
         # Check if file already exists
-        if os.path.isfile(fn_nc) and not overwrite:
+        if os.path.isfile(self.fn_nc) and not overwrite:
             # Read and return existing dataset
             print('Requested netCDF file already exists. ' + 
                   'Set overwrite=True to overwrite.')
-            ds = xr.open_dataset(fn_nc)
+            ds = xr.open_dataset(self.fn_nc)
             return ds
         
         # Crop input dataframe if requested and sel.dfm exists
@@ -409,6 +470,7 @@ class ADV():
 
         # Set requested fill value
         df = df.fillna(fillvalue)
+        print('df: ', df)
         
         # Convert time array to numerical format
         time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
@@ -429,6 +491,8 @@ class ADV():
                        'uyd': (['time'], df['v_desp']),
                        'uzd': (['time'], df['w_desp']),
                        'pressure':  (['time'], df['pressure']),
+                       'eta_hyd':  (['time'], df['eta_hyd']),
+                       'eta_lin':  (['time'], df['eta_lin']),
                        'heading_ang':  (['time'], df['heading']),
                        'pitch_ang':  (['time'], df['pitch']),
                        'roll_ang':  (['time'], df['roll']),
@@ -448,6 +512,8 @@ class ADV():
         ds.pitch_ang.attrs['units'] = 'degrees'
         ds.roll_ang.attrs['units'] = 'degrees'
         ds.pressure.attrs['units'] = 'hPa'
+        ds.eta_hyd.attrs['units'] = 'm'
+        ds.eta_lin.attrs['units'] = 'm'
         ds.time.encoding['units'] = time_units
         ds.time.attrs['units'] = time_units
         ds.time.attrs['standard_name'] = 'time'
@@ -473,7 +539,9 @@ class ADV():
         ds.heading_ang.attrs['standard_name'] = 'platform_orientation'
         ds.pitch_ang.attrs['standard_name'] = 'platform_pitch_angle'
         ds.roll_ang.attrs['standard_name'] = 'platform_roll_angle'
-        ds.pressure.attrs['standard_name'] = 'sea_water_pressure'
+        ds.pressure.attrs['standard_name'] = 'sea_water_pressure_due_to_sea_water'
+        ds.eta_hyd.attrs['standard_name'] = 'sea_surface_elevation'
+        ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         # Long names of velocity components
         ln_ux = 'x component of raw velocity in instrument reference frame'
         ln_uy = 'y component of raw velocity in instrument reference frame'
@@ -496,9 +564,26 @@ class ADV():
         ln_roll = ('Linearly interpolated instrument roll time series in ' + 
                    'instrument reference frame')
         ds.roll_ang.attrs['long_name'] = ln_roll
-        ln_pres = ('Pressure due to overlying sea water, air and ' + 
-                   'any other medium that may be present')
+        ln_pres = ('Hydrostatic pressure recorded by instrument')
         ds.pressure.attrs['long_name'] = ln_pres
+        ln_eh = ('Pressure head converted from hydrostatic pressure')
+        ds.eta_hyd.attrs['long_name'] = ln_eh
+        ln_el = ('Detrended sea-surface elevation reconstructed from ' + 
+                 'hydrostatic pressure using linear transfer function')
+        ds.eta_lin.attrs['long_name'] = ln_el
+        # Fill values
+        ds.ux.attrs['missing_value'] = fillvalue
+        ds.uy.attrs['missing_value'] = fillvalue
+        ds.uz.attrs['missing_value'] = fillvalue
+        ds.uxd.attrs['missing_value'] = fillvalue
+        ds.uyd.attrs['missing_value'] = fillvalue
+        ds.uzd.attrs['missing_value'] = fillvalue
+        ds.heading_ang.attrs['missing_value'] = fillvalue
+        ds.pitch_ang.attrs['missing_value'] = fillvalue
+        ds.roll_ang.attrs['missing_value'] = fillvalue
+        ds.pressure.attrs['missing_value'] = fillvalue
+        ds.eta_hyd.attrs['missing_value'] = fillvalue
+        ds.eta_lin.attrs['missing_value'] = fillvalue
         
         # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
@@ -506,16 +591,75 @@ class ADV():
         ds.attrs['summary'] =  "Nearshore acoustic doppler velocimeter measurements."
         ds.attrs['instrument'] = 'Nortek Vector ADV'
         ds.attrs['mooring_ID'] = self.mid
+        ds.attrs['burst_length'] = '{} seconds'.format(self.burstlen)
+        # Read attributes from .hdr file
+        if self.hdr is not None:
+            dpt_str = 'deployment_time'
+            dpt = self.hdr['value'][self.hdr['field']==dpt_str].item() 
+            ds.attrs[dpt_str] = dpt
+            nm_str = 'number_of_measurements'
+            n_meas = self.hdr['value'][self.hdr['field']==nm_str].item() 
+            ds.attrs[nm_str] = n_meas
+            cs_str = 'number_of_velocity_checksum_errors'
+            n_cse = self.hdr['value'][self.hdr['field']==cs_str].item() 
+            ds.attrs[cs_str] = n_cse
+            css_str = 'number_of_sensor_checksum_errors'
+            n_css = self.hdr['value'][self.hdr['field']==css_str].item() 
+            ds.attrs[css_str] = n_css
+            ndg_str = 'number_of_data_gaps'
+            n_dg = self.hdr['value'][self.hdr['field']==ndg_str].item() 
+            ds.attrs[ndg_str] = n_dg
+            fs_str = 'sampling_rate'
+            fs = self.hdr['value'][self.hdr['field']==fs_str].item() 
+            ds.attrs[fs_str] = fs
+            nvr_str = 'nominal_velocity_range'
+            nvr = self.hdr['value'][self.hdr['field']==nvr_str].item() 
+            ds.attrs[nvr_str] = nvr
+            bi_str = 'burst_interval'
+            bi = self.hdr['value'][self.hdr['field']==bi_str].item() 
+            ds.attrs[bi_str] = bi
+            sb_str = 'samples_per_burst'
+            sb = self.hdr['value'][self.hdr['field']==sb_str].item() 
+            ds.attrs[sb_str] = sb
+            sv_str = 'sampling_volume'
+            sv = self.hdr['value'][self.hdr['field']==sv_str].item() 
+            ds.attrs[sv_str] = sv
+            ml_str = 'measurement_load'
+            ml = self.hdr['value'][self.hdr['field']==ml_str].item() 
+            ds.attrs[ml_str] = ml
+            tl_str = 'transmit_length'
+            tl = self.hdr['value'][self.hdr['field']==tl_str].item() 
+            ds.attrs[tl_str] = tl
+            rl_str = 'receive_length'
+            rl = self.hdr['value'][self.hdr['field']==rl_str].item() 
+            ds.attrs[rl_str] = rl
+            vs_str = 'velocity_scaling'
+            vs = self.hdr['value'][self.hdr['field']==vs_str].item() 
+            ds.attrs[vs_str] = vs
+            im_str = 'imu_mode'
+            im = self.hdr['value'][self.hdr['field']==im_str].item() 
+            ds.attrs[im_str] = im
+            cs_str = 'coordinate_system'
+            cs = self.hdr['value'][self.hdr['field']==cs_str].item() 
+            ds.attrs[cs_str] = cs
+            ss_str = 'sound_speed'
+            ss = self.hdr['value'][self.hdr['field']==ss_str].item() 
+            ds.attrs[ss_str] = ss
+            sal_str = 'salinity'
+            sal = self.hdr['value'][self.hdr['field']==sal_str].item() 
+            ds.attrs[sal_str] = sal
+            nb_str = 'number_of_beams'
+            nb = self.hdr['value'][self.hdr['field']==nb_str].values[0] 
+            ds.attrs[nb_str] = nb
+            sn_str = 'serial_number'
+            sn = self.hdr['value'][self.hdr['field']==sn_str].values[0] 
+            ds.attrs[sn_str] = sn
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
-            serial_no = str(self.dfm[self.dfm['mooring_ID']==self.mid]['serial_number'].item())
-            ds.attrs['serial_number'] = serial_no
             comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
             ds.attrs['comment'] = comments
             config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
             ds.attrs['configurations'] = config
-            fs = self.dfm[self.dfm['mooring_ID']==self.mid]['sampling_freq'].item()
-            ds.attrs['sampling_frequency'] = '{} Hz'.format(fs)
         ds.attrs['magnetic_declination'] = '{} degrees East'.format(self.magdec)
         ds.attrs['despiking'] = ('3D phase-space despiking of velocities ' +
                                  'following Goring and Nikora (2002), ' +
@@ -544,13 +688,30 @@ class ADV():
                     'pitch_ang': {'_FillValue': fillvalue},        
                     'roll_ang': {'_FillValue': fillvalue},        
                     'pressure': {'_FillValue': fillvalue},
+                    'eta_hyd': {'_FillValue': fillvalue},
+                    'eta_lin': {'_FillValue': fillvalue},
                    }     
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
-        ds.to_netcdf(fn_nc, encoding=encoding)
+        ds.to_netcdf(self.fn_nc, encoding=encoding)
 
         return ds
+
+    
+    def read_vecnc(self, **kwargs):
+        """
+        Function wrapper to read Vector netcdf file generated by
+        self.df2nc() into xarray dataset and convert time index to
+        datetime format.
+        """
+        # Read netcdf file to xarray dataset
+        ds = xr.open_dataset(self.fn_nc)
+        # Parse time coordinate
+        time_ind = pd.to_datetime(num2date(ds.time.values, ds.time.units,  
+                                  only_use_python_datetimes=True, 
+                                  only_use_cftime_datetimes=False) 
+                                 )
 
 
 # Main script
@@ -577,10 +738,6 @@ if __name__ == '__main__':
                 choices=['C1v01', 'C2VP02', 'C3VP02', 'C4VP02', 'C5V02', 
                          'C6v01', 'L1v01', 'L2VP02', 'L4VP02', 'L5v01', 'ALL'],
                 default='C3VP02',
-                )
-        parser.add_argument("-datestr", 
-                help=("Specify date to read. Requires existing daily netcdf file."),
-                type=str,
                 )
         parser.add_argument("-M", 
                 help=("Segment window length (number of samples)"),
@@ -610,6 +767,10 @@ if __name__ == '__main__':
                 help=("Overwrite existing figures?"),
                 action="store_true",
                 )
+        parser.add_argument("--overwrite_nc", 
+                help=("Overwrite existing netcdf files?"),
+                action="store_true",
+                )
 
         return parser.parse_args(**kwargs)
 
@@ -625,6 +786,7 @@ if __name__ == '__main__':
     fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
 
     # Read atmospheric pressure time series
+    # NB! Nortek pressure is already hydrostatic pressure
     fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
     if not os.path.isfile(fn_patm):
         # csv file does not exist -> read mat file and generate dataframe
@@ -646,7 +808,7 @@ if __name__ == '__main__':
         dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
 
     # Check if processing just one mooring or all
-    if args.mid == 'ALL':
+    if args.mid.lower() == 'all':
         # Loop through all mooring IDs
         mids = ['C1v01', 'C2VP02', 'C3VP02', 'C4VP02', 'C5V02', 
                 'C6v01', 'L1v01', 'L2VP02', 'L4VP02', 'L5v01']
@@ -658,16 +820,12 @@ if __name__ == '__main__':
     for mid in tqdm(mids):
         # Initialize ADV class and read raw data
         adv = ADV(datadir=args.dr, mooring_id=mid, magdec=args.magdec,
-                  mooring_info=fn_minfo, outdir=outdir, patm=dfa)
+                  mooring_info=fn_minfo, outdir=outdir, patm=None)
+        raise ValueError('Test')
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
-        # Read data (specific date or all)
-        if args.datestr is None:
-            # Don't specify date
-            vec = adv.loaddata()
-        else:
-            # Read specified date
-            vec = adv.loaddata(datestr=args.datestr)
+        # Read data 
+        vec = adv.loaddata(overwrite=args.overwrite_nc)
         
 #        # Rotate despiked velocities to (E,N,U) reference frame
 #        vel_cols = ['u_desp', 'v_desp', 'w_desp']
