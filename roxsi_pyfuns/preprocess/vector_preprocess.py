@@ -744,12 +744,12 @@ if __name__ == '__main__':
                 default=512,
                 )
         parser.add_argument("-fmin", 
-                help=("Min. frequency for attenuation correction"),
+                help=("Min. frequency for pressure attenuation correction"),
                 type=float,
                 default=0.05,
                 )
         parser.add_argument("-fmax", 
-                help=("Max. frequency for attenuation correction"),
+                help=("Max. frequency for pressure attenuation correction"),
                 type=float,
                 default=0.33,
                 )
