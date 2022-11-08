@@ -282,7 +282,7 @@ class ADV():
 
             # Save to netcdf
             print('Converting to netcdf ...')
-            ds = self.df2nc(vec)
+            ds = self.df2nc(vec, overwrite=overwrite)
             # Return xr.Dataset
             return ds
     
@@ -470,7 +470,6 @@ class ADV():
 
         # Set requested fill value
         df = df.fillna(fillvalue)
-        print('df: ', df)
         
         # Convert time array to numerical format
         time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
@@ -818,10 +817,14 @@ if __name__ == '__main__':
 
     # Iterate over mooring ID(s)
     for mid in tqdm(mids):
+        # Skip mooring ID C6v01 for now, suspicious data
+        if mid == 'C6v01':
+            print('Not processing Mooring ID {} due to suspicious raw data.'.format(
+                mid))
+            continue
         # Initialize ADV class and read raw data
         adv = ADV(datadir=args.dr, mooring_id=mid, magdec=args.magdec,
                   mooring_info=fn_minfo, outdir=outdir, patm=None)
-        raise ValueError('Test')
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data 
