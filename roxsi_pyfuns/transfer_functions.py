@@ -112,7 +112,7 @@ def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
 
 class TRF():
     """
-    Pressure-to-sea surface transfer function (TRF) class.
+    Pressure-to-sea surface linear transfer function (TRF) class.
     """
     def __init__(self, fs=16, zp=0, type='RBR SoloD'):
         """
