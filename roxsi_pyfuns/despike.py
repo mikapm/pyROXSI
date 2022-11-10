@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from itertools import chain
 from sklearn import gaussian_process
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
 from copy import deepcopy
 
 """
@@ -135,11 +137,12 @@ def otsu_1979_threshold(diff_signal):
 
     return opt_thresh
 
-
+@ignore_warnings(category=ConvergenceWarning)
 def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None, 
         return_aux=True, length_scale_bounds=(5.0, 30.0), 
         predict_all=True, kernel=None, despike=True, 
-        score_thresh=0.995, print_kernel=True):
+        score_thresh=0.995, print_kernel=False,
+        scores_in=None):
     """
     Non-parametric despiking and spike replacement based on 
     fitting a Gaussian process to the data, following 
@@ -178,6 +181,9 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
                        despiking/no despiking
         print_kernel - bool; set to False to not print kernel 
                        parameters
+        scores_in - array_like; list of pre-calculated scores
+                    to use for skipping chunks that have already been
+                    found to have high R^2 score.
 
     Returns:
         y_desp - despiked time series (only spikes and dropouts 
@@ -235,16 +241,19 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
     for chunk_no, chunk in enumerate(np.arange(n, len(ts)+n, step=n)):
         if print_kernel:
             print('Chunk number: ', chunk_no)
+
         # Define chunk interval (overlap vs. no overlap)
         if overlap is not None:
             if (chunk-n-overlap) < 0:
                 # First chunk with overlap only at the end
-                interval = np.arange(chunk-n, chunk+overlap, dtype=int)
+                interval = np.arange(chunk-n, chunk+overlap, 
+                dtype=int)
                 # Full range of x's for prediction
                 x_pred = np.arange(chunk-n, chunk+overlap)
             elif (chunk+overlap) > len(ts):
                 # Last chunk with overlap only at the start
-                interval = np.arange(chunk-n-overlap, chunk, dtype=int)
+                interval = np.arange(chunk-n-overlap, chunk, 
+                dtype=int)
                 # Full range of x's for prediction
                 x_pred = np.arange(chunk-n-overlap, chunk)
             else:
@@ -255,15 +264,29 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
                 x_pred = np.arange(chunk-n-overlap, chunk+overlap)
         else:
             # No overlap
-            interval = np.arange(chunk-n, chunk, dtype=int)
+            interval = np.arange(chunk-n, 
+                                 min(chunk, len(ts)-1),
+                                 dtype=int)
             # Full range of x's for prediction
-            x_pred = np.arange(chunk-n, chunk)
+            x_pred = np.arange(chunk-n, min(chunk, len(ts)-1))
 
         # Chunk up data and mask based on interval
-        y_chunk = ts[interval] # take out test chunk
+        y_chunk = ts[interval].copy() # take out test chunk
         mask_do_chunk = mask_do[interval] # same for the dropout mask
         # Cut out dropouts from y_chunk
         y_chunk_nodo = y_chunk[mask_do_chunk]
+
+        # Check if input scores list given
+        if scores_in is not None:
+            # Check if current chunk has high score and can be skipped
+            si = scores_in[chunk_no]
+            if si >= score_thresh:
+                # Chunk score already high enough 
+                # => don't despike again
+                y_desp[interval] = y_chunk
+                spike_mask[interval] = np.ones_like(y_chunk).astype(
+                    bool)
+                continue
 
         # Make x (t) axis for GP fit to training data
         x_train = interval.copy()
@@ -300,7 +323,8 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
             # kernel = parameterization of covariance matrix + 
             # Gaussian noise, Eq. (5) in Bohlinger et al.
             kernel = (ConstantKernel(1.0) * \
-                    RBF(length_scale=length_scale_bounds[0], length_scale_bounds=length_scale_bounds) + \
+                    RBF(length_scale=length_scale_bounds[0], 
+                        length_scale_bounds=length_scale_bounds) + \
                     WhiteKernel(noise_level=1.0))
         # Define GP
         gp = gaussian_process.GaussianProcessRegressor(
@@ -370,28 +394,6 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
         y_desp[interval] = y_chunk
 
 
-        # ********************************
-        # Sample y values for dropouts from posterior
-        # (if prediction was made for those points)
-        # ********************************
-        if predict_all:
-            x_dropouts = interval[~mask_do_chunk].reshape(-1,1)
-            # Sample from posterior (only implemented in sklearn 
-            # for now)
-            if len(x_dropouts):
-                # Make matrix of samples for each dropout location
-                S = gp.sample_y(x_dropouts, 100) 
-                S += yn_mean # Add the mean back
-                # Make samples into tuples
-                y_samp_do = [list(map(tuple,i)) for i in S]
-                y_samp_do = list(chain(*y_samp_do))
-                x_dropouts = x_dropouts.squeeze()
-                if len(np.atleast_1d(x_dropouts))==1:
-                    x_dropouts = int(x_dropouts)
-                # Store samples into output array
-                #y_samp[x_dropouts] = y_samp_do
-                y_samp[x_dropouts] = S.squeeze()
-
     # Don't want the initial dropouts to be included in the returned 
     # spike mask -> add those back
     spike_mask[dropout_mask==0] = 1
@@ -411,8 +413,8 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
     Goring and Nikora (2002), and later modified by Wahl (2003) and
     Mori (2005). 
     
-    This function is based on the Matlab function func_despike_phasespace3d
-    by Mori (2005).
+    This function is based on the Matlab function 
+    func_despike_phasespace3d.m by Mori (2005).
 
     Parameters:
         ts - time series to despike
@@ -420,12 +422,14 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
     """
     from mpl_toolkits.mplot3d import axes3d, Axes3D
 
-    # Universal threshold lambda_u: the expected maximum of N independent
-    # samples drawn from a standard normal distribution (Goring & Nikora, 2002)
+    # Universal threshold lambda_u: the expected maximum of N 
+    # independent samples drawn from a standard normal distribution 
+    # (Goring & Nikora, 2002)
     N = len(ts)
     if threshold == 'universal':
         lambda_u = np.sqrt(2*np.log(N))
-    # Chauvenet's criterion is independent of the size of the sample (Wahl, 2003)
+    # Chauvenet's criterion is independent of the size of the 
+    # sample (Wahl, 2003)
     elif threshold == 'chauvenet':
         p = 1 / (2*N) # rejection probability
         Z = np.sqrt(2) * erfinv(1-p)
@@ -445,7 +449,8 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
     theta = np.arctan2(np.dot(u, du2), np.sum(u**2, dtype=float))
 
     # Look for outliers in 3D phase space
-    # Following the func_excludeoutlier_ellipsoid3d.m Matlab script by Mori
+    # Following the func_excludeoutlier_ellipsoid3d.m Matlab script 
+    # by Mori
     if theta == 0:
         x = u
         y = du1
@@ -461,9 +466,10 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
         y = u * R[1,0] + du1 * R[1,1] + du2 * R[1,2]
         z = u * R[2,0] + du1 * R[2,1] + du2 * R[2,2]
     
-    # G&N02: For each pair of variables, calculate the ellipse that has max. and min.
-    # from the previous computation. Use the MAD (median of absolute deviation)
-    # instead of std for more robust scale estimators (Wahl, 2003).
+    # G&N02: For each pair of variables, calculate the ellipse that 
+    # has max. and min. from the previous computation. Use the MAD 
+    # (median of absolute deviation) instead of std for more robust 
+    # scale estimators (Wahl, 2003). 
     # Semi axes of the ellipsoid
     a = lambda_u * 1.483*robust.mad(x, c=1)
     b = lambda_u * 1.483*robust.mad(y, c=1)
@@ -488,10 +494,10 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
             z2 = np.sqrt(zt)
         else:
             z2 = 0
-        # Check for outliers from the ellipsoid by subtracting the ellipsoid
-        # corresponding to the data (x1, y1, z1) from the ellipsoid given by
-        # a,b and c. If the difference is less than 0 the point lies outside
-        # the ellipsoid.
+        # Check for outliers from the ellipsoid by subtracting the 
+        # ellipsoid corresponding to the data (x1, y1, z1) from the 
+        # ellipsoid given by a,b and c. If the difference is less
+        # than 0 the point lies outside the ellipsoid.
         dis = (x2**2 + y2**2 + z2**2) - (x1**2 + y1**2 + z1**2)
         if dis < 0:
             spike_mask[i] = 1
