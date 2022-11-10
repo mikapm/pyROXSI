@@ -482,8 +482,6 @@ if __name__ == '__main__':
         print('Serial number: ', ser)
         # Initialize class
         adcp = ADCP(datadir=args.dr, ser=ser, mooring_info=fn_minfo)
-        # Loop over raw .mat files and save data as netcdf
-        ds_list = [] # Empty list for concatenating datasets
         # Read first mat structure and get start and end timestamps
         times_mat, times = adcp.read_mat_times(fn_mat=adcp.fns[0])
         date0 = str(times[0].date()) # Date of first timestamp
@@ -491,6 +489,7 @@ if __name__ == '__main__':
         print('t0: {}, t1: {}'.format(date0, date1))
         # Save all datasets for the same date in list for concatenating
         dsv_daily = []
+        # Loop over raw .mat files and save daily data as netcdf
         for i,fn_mat in enumerate(adcp.fns):
             # Check if daily netcdf files already exist
             date0_str = ''.join(date0.split('-'))
@@ -502,7 +501,7 @@ if __name__ == '__main__':
                 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
                     adcp.mid, date1_str))
             if not os.path.isfile(fn_nc0) or not os.path.isfile(fn_nc1):
-                # Read mat structure
+                # Read mat structure for velocities and 1D timeseries
                 dsv = adcp.loaddata_vel(fn_mat)
                 # Check if start and end dates the same
                 date0 = str(pd.Timestamp(dsv.time[0].values).date())
