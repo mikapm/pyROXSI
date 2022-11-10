@@ -15,6 +15,7 @@ from scipy.io import loadmat
 import matplotlib.pyplot as plt
 from datetime import datetime as DT
 from cftime import date2num, num2date
+from roxsi_pyfuns import despike as rpd
 
 class ADCP():
     """
@@ -74,14 +75,24 @@ class ADCP():
         self.fns = sorted(glob.glob(os.path.join(self.datadir,
             '*S{}A001*.mat'.format(self.ser))))
 
-    def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25')):
+    def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
+                     despike_vel=True, despike_ast=True):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
         data into xr.Dataset.
 
         Parameters:
-            fn_mat - str; path to .mat filename
-            ref_date - reference date to use for time axis
+            fn_mat - str; path to .mat filename.
+            ref_date - reference date to use for time axis.
+            despike_vel - bool; if True, despikes velocities using
+                          3D phase-space despiking method of Goring
+                          and Nikora (2002), modified by Wahl (2003)
+                          and Mori et al. (2007) in 20-minute
+                          segments.
+            despike_ast - bool; if True, despikes Acoustic Surface
+                          Tracking (AST) data using Gaussian Process
+                          method of Malila et al. (2022) in 20-minute
+                          segments.
         """
         # Read .mat structure
         mat = loadmat(fn_mat)
@@ -112,6 +123,16 @@ class ADCP():
         s = s.sort_index() # Sort indices (just in case)
         # Interpolate AST data to dst.time
         si = s.reindex(time_arr, method='nearest').interpolate()
+        # Despike AST signal if requested
+        if despike_ast:
+            # Count number of full 20-minute (1200-sec) segments
+            t0s = si.index[0] # Start timestamp
+            t1s = si.index[-1] # End timestamp
+            nseg = np.floor((t1s - t0s).total_seconds() / 1200)
+            # Iterate over approx. 20-min long segments
+            for sn, seg in enumerate(np.array_split(si, nseg)):
+                print('len(seg): ', len(seg))
+                # Despike segment using GP method
 
         # Velocities from beams 1-4
         vb1 = mat['Data']['Burst_VelBeam1'].item().squeeze()
@@ -136,6 +157,16 @@ class ADCP():
 
         return ds
 
+
+    def despike_GP(self, arr, **kwargs):
+        """
+        Despike wave signal following the Gaussian Process-based
+        methodology of Malila et al. (2022),
+
+        Parameters:
+            arr - 1D wave signal to despike
+            **kwargs for rpd.GP_despike()
+        """
 
 # Main script
 if __name__ == '__main__':
