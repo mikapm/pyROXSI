@@ -142,7 +142,7 @@ class ADCP():
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
-                     despike_vel=True, despike_ast=True):
+                     despike_vel=False, despike_ast=True):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
         data into xr.Dataset.
@@ -154,7 +154,7 @@ class ADCP():
                           3D phase-space despiking method of Goring
                           and Nikora (2002), modified by Wahl (2003)
                           and Mori et al. (2007) in 20-minute
-                          segments.
+                          segments. NB: Not implemented!
             despike_ast - bool; if True, despikes Acoustic Surface
                           Tracking (AST) data using Gaussian Process
                           method of Malila et al. (2022) in 20-minute
@@ -220,6 +220,9 @@ class ADCP():
         vb2 = mat['Data']['Burst_VelBeam2'].item().squeeze()
         vb3 = mat['Data']['Burst_VelBeam3'].item().squeeze()
         vb4 = mat['Data']['Burst_VelBeam4'].item().squeeze()
+        # Despike velocities?
+        if despike_vel:
+            print('Velocity despiking not implemented (yet).')
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
         cell_arr = np.arange(ncells) # Velocity cell levels
@@ -229,7 +232,9 @@ class ADCP():
                        'vb2': (['time', 'cell'], vb2),
                        'vb3': (['time', 'cell'], vb3),
                        'vb4': (['time', 'cell'], vb4),
+                       # Raw AST (20-min. mean removed)
                        'astr': (['time'], df_ast['rdm'].values),
+                       # GP-despiked AST (20-min. mean removed)
                        'astd': (['time'], df_ast['des'].values),
                       },
             coords={'time': (['time'], time_arr),
@@ -419,7 +424,7 @@ if __name__ == '__main__':
                 default='103063',
                 )
         parser.add_argument("-M", 
-                help=("Segment window length (number of samples)"),
+                help=("Pressure transform segment window length"),
                 type=int,
                 default=512,
                 )
@@ -476,24 +481,26 @@ if __name__ == '__main__':
     for ser in sers:
         print('Serial number: ', ser)
         # Initialize class
-        adcp = ADCP(datadir=args.dr, ser=ser, )
+        adcp = ADCP(datadir=args.dr, ser=ser, mooring_info=fn_minfo)
         # Loop over raw .mat files and save data as netcdf
         ds_list = [] # Empty list for concatenating datasets
         # Read first mat structure and get start and end timestamps
         times_mat, times = adcp.read_mat_times(fn_mat=adcp.fns[0])
-        date0 = times[0].date() # Date of first timestamp
-        date1 = times[-1].date() # Date of last timestamp
+        date0 = str(times[0].date()) # Date of first timestamp
+        date1 = str(times[-1].date()) # Date of last timestamp
         print('t0: {}, t1: {}'.format(date0, date1))
         # Save all datasets for the same date in list for concatenating
         dsv_daily = []
-        for i,fn_mat in enumerate([adcp.fns[0]]):
+        for i,fn_mat in enumerate(adcp.fns):
             # Check if daily netcdf files already exist
+            date0_str = ''.join(date0.split('-'))
+            date1_str = ''.join(date1.split('-'))
             fn_nc0 = os.path.join(outdir, 
                 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
-                    self.mid, date0))
+                    adcp.mid, date0_str))
             fn_nc1 = os.path.join(outdir, 
                 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
-                    self.mid, date1))
+                    adcp.mid, date1_str))
             if not os.path.isfile(fn_nc0) or not os.path.isfile(fn_nc1):
                 # Read mat structure
                 dsv = adcp.loaddata_vel(fn_mat)
@@ -510,16 +517,18 @@ if __name__ == '__main__':
                     dsv_daily.append(dsv0)
                     # Concatenate daily datasets and save to netcdf
                     print('Concatenating daily datasets ...')
-                    dsd = xr.concat(dsv_daily)
+                    dsd = xr.concat(dsv_daily, dim='time')
                     print('Saving daily dataset to netCDF ...')
                     dsd.to_netcdf(fn_nc0)
                     # Make new empty list and append the following day
                     dsv_daily = []
                     dsv1 = dsv.sel(time=date1).copy()
                     dsv_daily.append(dsv1)
-                if i==(len(adsp.fns)-1):
+                if i==(len(adcp.fns)-1):
                     # Last file, save last netcdf
                     print('Saving last daily dataset to netCDF ...')
+                    dsd = xr.concat(dsv_daily, dim='time')
+                    dsd.to_netcdf(fn_nc0)
 
 
 
