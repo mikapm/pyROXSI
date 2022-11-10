@@ -13,6 +13,8 @@ import pandas as pd
 import xarray as xr
 from scipy.io import loadmat
 import matplotlib.pyplot as plt
+from datetime import datetime as DT
+from cftime import date2num, num2date
 
 class ADCP():
     """
@@ -72,37 +74,67 @@ class ADCP():
         self.fns = sorted(glob.glob(os.path.join(self.datadir,
             '*S{}A001*.mat'.format(self.ser))))
 
-    def loaddata_1d(self, fn_mat):
+    def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25')):
         """
-        Load Nortek Signature 1000 time series data into xr.Dataset.
+        Load Nortek Signature 1000 velocity and surface track (AST) 
+        data into xr.Dataset.
 
         Parameters:
             fn_mat - str; path to .mat filename
+            ref_date - reference date to use for time axis
         """
         # Read .mat structure
         mat = loadmat(fn_mat)
 
-        # Read arrays to save in dataset
-        time_mat = dsi['Data']['Burst_Time'].item().squeeze() # Time array
+        # Read and convert general time array
+        time_mat = mat['Data']['Burst_Time'].item().squeeze() # Time array
         # Convert Matlab times to datetime
-        time_arr = pd.to_datetime(time_mat-719529, unit='D')
-        # Velocities from beams 1-4
-        vb1 = dsi['Data']['Burst_VelBeam1'].item().squeeze()
-        vb2 = dsi['Data']['Burst_VelBeam2'].item().squeeze()
-        vb3 = dsi['Data']['Burst_VelBeam3'].item().squeeze()
-        vb4 = dsi['Data']['Burst_VelBeam4'].item().squeeze()
-        # Save arrays to temporary dataframe
-        dfi = pd.DataFrame(data={'vb1':vb1, 'vb2':vb2, 'vb3':vb3, 'vb4':vb4},
-                           index=time_arr)
-        # Acoustic surface tracking distance - AST
-        ast = dsi['Data']['Burst_AltimeterDistanceAST'].item().squeeze()
-        # Interpolate AST to "master" time array using AST time offsets
-        ast_offs = dsi['Data']['Burst_AltimeterTimeOffsetAST'].item().squeeze()
-        time_ast_mat = time_mat - ast_offs
-        time_ast = pd.to_datetime(time_ast_mat-719529, unit='D')
-        df_ast = pd.DataFrame(data={'ast':ast}, index=time_ast)
+        time_arr = pd.Series(pd.to_datetime(time_mat-719529, unit='D'))
+        time_arr = time_arr.dt.to_pydatetime()
+        # Convert time array to numerical format
+        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
+        time_vals = date2num(time_arr, time_units, 
+                             calendar='standard', 
+                             has_year_zero=True)
 
-        return dfi
+        # Acoustic surface tracking distance - AST
+        ast = mat['Data']['Burst_AltimeterDistanceAST'].item().squeeze()
+        # Interpolate AST to general time stamps using AST time offsets
+        time_ast = pd.Series(pd.to_datetime(time_mat-719529, unit='D'))
+        # Add AST time offsets to time array
+        ast_offs = mat['Data']['Burst_AltimeterTimeOffsetAST'].item().squeeze()
+        for i, offs in enumerate(ast_offs):
+            time_ast[i] += pd.Timedelta(seconds=offs)        
+        # Change time format to match dst.time
+        time_ast = time_ast.dt.to_pydatetime()
+        # Save AST array in pandas Series
+        s = pd.Series(data=ast, index=time_ast)
+        s = s.sort_index() # Sort indices (just in case)
+        # Interpolate AST data to dst.time
+        si = s.reindex(time_arr, method='nearest').interpolate()
+
+        # Velocities from beams 1-4
+        vb1 = mat['Data']['Burst_VelBeam1'].item().squeeze()
+        vb2 = mat['Data']['Burst_VelBeam2'].item().squeeze()
+        vb3 = mat['Data']['Burst_VelBeam3'].item().squeeze()
+        vb4 = mat['Data']['Burst_VelBeam4'].item().squeeze()
+        # Read number of vertical cells for velocities
+        ncells = mat['Config']['Burst_NCells'].item().squeeze()
+        cell_arr = np.arange(ncells) # Velocity cell levels
+        # Make output dataset and save to netcdf
+        ds = xr.Dataset(
+            data_vars={'vb1': (['time', 'cell'], vb1),
+                       'vb2': (['time', 'cell'], vb2),
+                       'vb3': (['time', 'cell'], vb3),
+                       'vb4': (['time', 'cell'], vb4),
+                       'ast': (['time'], si.values),
+                      },
+            coords={'time': (['time'], time_arr),
+                    'cell': (['cell'], cell_arr)}
+            )
+        ds = ds.sortby('time') # Sort indices (just in case)
+
+        return ds
 
 
 # Main script
@@ -189,8 +221,8 @@ if __name__ == '__main__':
         ds_list = [] # Empty list for concatenating datasets
         for i,fn_mat in enumerate(adcp.fns):
             # Read mat structure
-            dsi = adcp.loaddata_1d(fn_mat)
+            dsv = adcp.loaddata_vel(fn_mat)
             # Append dataset to list for concatenating
-            ds_list.append(dsi)
+            # ds_list.append(mat)
 
 
