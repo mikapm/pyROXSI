@@ -578,45 +578,73 @@ def array_median(ts_array, ts_axis=0, replace_single='linear',
     return u, spike_mask
 
 
-def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
-        length_scale_bounds=(5.0, 30.0), predict_all=True, use_nigp=True,
-        use_sklearn=False, despike=True, score_thresh=0.99, print_kernel=True):
+def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None, 
+        return_aux=True, length_scale_bounds=(5.0, 30.0), 
+        predict_all=True, use_nigp=False, kernel=None,
+        use_sklearn=True, despike=True, score_thresh=0.995, 
+        print_kernel=True):
     """
-    Non-parametric despiking and spike replacement based on fitting
-    a Gaussian process to the data, following Bohlinger et al. (2019):
-    A probabilistic approach to wave model validation applied to 
-    satellite observations. Chunks up data according to input arg
-    chunksize to speed up processing, which can be slow for long datasets 
-    (computational expense O(N^3)).
+    Non-parametric despiking and spike replacement based on 
+    fitting a Gaussian process to the data, following 
+    
+    Malila et al. (2021, Jtech):
+    "A nonparametric, data-driven approach to despiking ocean
+    surface wave time series."  
+    https://doi.org/10.1175/JTECH-D-21-0067.1
+    
+    Chunks up data according to input arg
+    chunksize to speed up processing, which can be slow for long 
+    datasets (computational expense O(N^3)).
+
+    Also includes option to use noisy-input GP regression (NIGP)
+    (McHutchon and Rasmussen 2011) instead of standard GP regression. 
+    This option was mainly included for testing purposes. 
+    For optimal performance (both computational efficiency 
+    and despiking accuracy), it is advised that standard GP 
+    regression is used.
 
     Parameters:
         ts - float array; 1D time series to despike
-        dropout_mask - bool array; mask for missing values (and obvious
-                       spikes), where 0 means a bad value (dropout or spike)
-        chunksize - int; no. of datapoints in which to chunk up the signal;
-                    if the signal is longer than ~1000 points the 
-                    function is quite slow without chunking.
+        dropout_mask - bool array; mask for missing values 
+                       (and obvious spikes), where 0 means a 
+                       bad value (dropout or spike)
+        chunksize - int; no. of datapoints in which to chunk up the
+                    signal; if the signal is longer than ~1000 
+                    points the function is quite slow without chunking.
         overlap - int; number of points to overlap the chunks, 
                   adds 2*overlap to the true chunksize
-        return_aux - bool; if true, also return y_pred, sigma, y_samp
-        length_scale_bounds - tuple; bounds for allowable length scales
-                              for the GP kernel.
-        predict_all - bool; if set to False, will remove the data points
-                      specified by dropout_mask in the prediction stage.
-                      This may help with identifying outliers in cases
-                      of many dropouts.
-        despike - bool; if False, only replace samples given in dropout_mask, 
-                  i.e no spike detection is done.
-        score_thresh - float; R^2 upper threshold for despiking/no despiking
+        return_aux - bool; if True, also return y_pred, sigma, y_samp
+        length_scale_bounds - tuple; bounds for allowable length 
+                              scales for the GP kernel.
+        kernel - If not None, input a specified covariance kernel of 
+                 own choice (only works for use_sklearn=True)
+        predict_all - bool; if set to False, will remove the data 
+                      points specified by dropout_mask in the 
+                      prediction stage. This may help with identifying
+                      outliers in cases of many dropouts.
+        use_nigp - bool; set to True to use NIGP regression 
+                   (not advised)
+        despike - bool; if False, only replace samples given in 
+                  dropout_mask, i.e no spike detection is done.
+        use_sklearn - bool; By default True, meaning that the 
+                      scikit-learn GP regression package is used 
+                      (advised)
+        score_thresh - float; R^2 upper threshold for 
+                       despiking/no despiking
+        print_kernel - bool; set to False to not print kernel 
+                       parameters
 
-    Returns (if return_aux=True):
-        y_desp - despiked time series (only spikes and dropouts replaced)
+    Returns:
+        y_desp - despiked time series (only spikes and dropouts 
+                 replaced)
+        (if return_aux=True, then also returns):
         spike_mask - bool array; mask for detected spikes
-        (if return_aux=True, then also):
         y_pred - predicted (smooth) signal produced by GP fit
         sigma - std for each data point given by the GP fit
         y_samp - 100 samples drawn from the pdf of each dropout 
-                 (+ obvious spike) point. Only works for use_sklearn=True.
+                 (+ obvious spike) point. Only works for 
+                 use_sklearn=True.
+        theta - dict; GP fit hyperparameters for each chunk
     """
 
     # Check if ts is all NaN
@@ -639,11 +667,13 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
         mask_do = np.ones(len(ts), dtype=bool)
 
     # Initialize output arrays
-    y_desp = deepcopy(ts) # Output time series with spikes & dropouts replaced
+    y_desp = ts.copy() # Output array w/ spikes & dropouts replaced
     spike_mask = np.ones(len(ts), dtype=bool)
     y_pred = np.zeros(len(ts)) # Full predicted mean signal
-    sigma = np.zeros_like(y_pred) # Uncertainty (std) for each data point
-    y_samp = np.ones(len(ts), dtype=(float,100)) * np.nan # Samples from posterior
+    # Uncertainty (std) for each data point
+    sigma = np.zeros_like(y_pred) 
+    # Samples from posterior
+    y_samp = np.ones(len(ts), dtype=(float,100)) * np.nan 
 
     # ********************************
     # Chunk up the time series for more efficient computing
@@ -675,7 +705,8 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
                 x_pred = np.arange(chunk-n-overlap, chunk)
             else:
                 # All other chunks with overlap at start & end
-                interval = np.arange(chunk-n-overlap, chunk+overlap, dtype=int)
+                interval = np.arange(chunk-n-overlap, chunk+overlap,
+                                     dtype=int)
                 # Full range of x's for prediction
                 x_pred = np.arange(chunk-n-overlap, chunk+overlap)
         else:
@@ -691,22 +722,24 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
         y_chunk_nodo = y_chunk[mask_do_chunk]
 
         # Make x (t) axis for GP fit to training data
-        x_train = deepcopy(interval)
+        x_train = interval.copy()
         # Cut out dropouts (how the GP fit works)
         x_train = x_train[mask_do_chunk] 
 
-        # If requested, remove points specified in dropout_mask from x_pred
-        # This means that the prediction skips the data points determined by
-        # dropout_mask. In the output, those skipped data points will be
-        # assigned NaN.
+        # If requested, remove points specified in dropout_mask 
+        # from x_pred. This means that the prediction skips the 
+        # data points determined by dropout_mask. In the output, 
+        # those skipped data points will be assigned NaN.
         if not predict_all:
             x_pred = x_pred[mask_do_chunk]
             y_chunk = y_chunk[mask_do_chunk]
-            # Set skipped (i.e. not predicted) data points to NaN in output
+            # Set skipped (i.e. not predicted) data points to NaN 
+            # in output
             skipped = interval[~mask_do_chunk]
             y_pred[skipped] = np.nan
             y_desp[skipped] = np.nan
-            # Also remove masked points from interval, as it is used later
+            # Also remove masked points from interval, as it is
+            # used later
             interval = interval[mask_do_chunk]
 
         # ********************************
@@ -714,11 +747,10 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
         # ********************************
 
         yn_mean = np.nanmean(y_chunk_nodo)
-        yn_median = np.nanmedian(y_chunk_nodo)
-        # Copy zn for GP fitting
-        y_train = deepcopy(y_chunk_nodo)
+        # Copy chunk for GP fitting
+        y_train = y_chunk_nodo.copy()
         # Remove mean
-        y_train = y_train - yn_mean
+        y_train -= yn_mean
 
         if use_sklearn is False:
             if not use_nigp:
@@ -736,47 +768,52 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
                     )
             # Train GP model on data and optimise hyperparameters 
             # (including input noise if use_nigp=True)
-            #mu_s, cov_s, theta_s = gp1.train(X, X_train1, Y_train1)
-            #mu_s_chunk, cov_s_chunk, theta_s = gp1.train(
-            y_pred_n, sigma_n, theta_s, score = gp.train(x_pred.reshape(-1,1), 
-                    x_train.reshape(-1,1), y_train.reshape(-1,1),
-                    return_score=True)
+            y_pred_n, sigma_n, theta_s, score = gp.train(
+                x_pred.reshape(-1,1), 
+                x_train.reshape(-1,1), 
+                y_train.reshape(-1,1),
+                return_score=True
+                )
             # Add score to theta_s
             theta_s['score'] = score
         else:
-            # kernel = parameterization of covariance matrix + Gaussian noise,
-            # eq. 5 in Bohlinger et al.
-            #kernel = (RBF(length_scale=1, length_scale_bounds=length_scale_bounds) +
-            #kernel = (1*RBF(length_scale=1) +
-            kernel = (ConstantKernel(1.0) * \
-                    RBF(length_scale=1.0, length_scale_bounds=length_scale_bounds) + \
-                    WhiteKernel(noise_level=1.0)#, noise_level_bounds=(0.0, 10.0))
-                    )
+            if kernel is None:
+                # kernel = parameterization of covariance matrix + 
+                # Gaussian noise, Eq. (5) in Bohlinger et al.
+                kernel = (ConstantKernel(1.0) * \
+                        RBF(length_scale=length_scale_bounds[0], length_scale_bounds=length_scale_bounds) + \
+                        WhiteKernel(noise_level=1.0))
             # Define GP
-            gp = gaussian_process.GaussianProcessRegressor(kernel=kernel)
+            gp = gaussian_process.GaussianProcessRegressor(
+                kernel=kernel)
             # Train GP process on data
-            gp.fit(np.array(x_train).reshape(-1,1), np.array(y_train).reshape(-1,1))
+            gp.fit(np.array(x_train).reshape(-1,1), 
+                   np.array(y_train).reshape(-1,1))
             gp.kernel_
             if print_kernel:
                 print('GP kernel (sklearn): ', gp.kernel_)
             # Compute coefficient of determination R^2
-            score = gp.score(x_train.reshape(-1,1), y_train.reshape(-1,1))
+            score = gp.score(x_train.reshape(-1,1), 
+                             y_train.reshape(-1,1))
             # Make prediction based on GP (fills in missing points).
-            # Remember, x_pred includes the entire range of indices in the chunk,
-            # unless predict_all is set to False.
-            # TODO: This might not be optimal for spike detection, as found in
-            # testing with the time series from 3 Jan 2019, 00:40. A better way
-            # might be to run an initial spike detection run in which dropout and
-            # obvious spike locations are removed from x_pred, as this may have a
-            # greater success rate at detecting spikes. Afterward, another GP fit
-            # could be run with the full x_pred vector, in order to fill in all the
-            # gaps.
+            # Remember, x_pred includes the entire range of indices 
+            # in the chunk, unless predict_all is set to False.
+            # TODO: This might not be optimal for spike detection, 
+            # as found when testing with the time series from 
+            # 3 Jan 2019, 00:40. A better way might be to run an 
+            # initial spike detection run in which dropout and 
+            # obvious spike locations are removed from x_pred, 
+            # as this may have a greater success rate at detecting 
+            # spikes. Afterward, another GP fit could be run with 
+            # the full x_pred vector, in order to fill in all gaps.
             y_pred_n, sigma_n = gp.predict(np.array(x_pred).reshape(-1,1), 
                     return_std=True)
             # Save trained hyperparams and R^2 score
             l = gp.kernel_.k1.get_params()['k2__length_scale']
-            sigma_f = np.sqrt(gp.kernel_.k1.get_params()['k1__constant_value'])
-            sigma_y = np.sqrt(gp.kernel_.k2.get_params()['noise_level'])
+            sigma_f = np.sqrt(
+                gp.kernel_.k1.get_params()['k1__constant_value'])
+            sigma_y = np.sqrt(
+                gp.kernel_.k2.get_params()['noise_level'])
             theta_s = {'l':l, 'sigma_f':sigma_f, 'sigma_y':sigma_y,
                     'sigma_x':0.0, 'score':score}
 
@@ -796,10 +833,11 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
 
         y_pred[interval] = y_pred_n
         sigma[interval] = sigma_n
-        #if despike and score < 0.99:
         if despike and score < score_thresh:
-            # Detect outliers and replace both newly found spikes and dropouts
-            mask = np.logical_and(y_chunk>y_pred_n-2*sigma_n, y_chunk<y_pred_n+2*sigma_n)
+            # Detect outliers and replace both newly found spikes 
+            # and dropouts
+            mask = np.logical_and(y_chunk>y_pred_n-2*sigma_n, 
+                                  y_chunk<y_pred_n+2*sigma_n)
             if print_kernel:
                 print('Spikes found: {} \n'.format(np.sum(~mask)))
             mask = np.logical_or(~mask, ~mask_do_chunk)
@@ -807,7 +845,6 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
         else:
             # Only replace points defined in dropout_mask
             mask = mask_do_chunk.copy()
-            #mask = ~mask
         spike_mask[interval] = mask
         # Replace spikes and dropouts by corresponding y_pred values
         y_chunk[~mask] = y_pred_n[~mask]
@@ -820,7 +857,8 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
         # ********************************
         if predict_all and use_sklearn:
             x_dropouts = interval[~mask_do_chunk].reshape(-1,1)
-            # Sample from posterior (only implemented in sklearn for now)
+            # Sample from posterior (only implemented in sklearn 
+            # for now)
             if len(x_dropouts):
                 # Make matrix of samples for each dropout location
                 S = gp.sample_y(x_dropouts, 100) 
@@ -835,15 +873,16 @@ def GP_fit(ts, dropout_mask=None, chunksize=200, overlap=None, return_aux=True,
                 #y_samp[x_dropouts] = y_samp_do
                 y_samp[x_dropouts] = S.squeeze()
 
-    # Don't want the initial dropouts to be included in the returned spike mask
-    # -> add those back
+    # Don't want the initial dropouts to be included in the returned 
+    # spike mask -> add those back
     spike_mask[dropout_mask==0] = 1
 
     if return_aux is True:
-        return y_desp, spike_mask, y_pred, sigma, y_samp, theta, score
+        return y_desp, spike_mask, y_pred, sigma, y_samp, theta
     else:
         # Only return the despiked signal
         return y_desp
+
 
 
 def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
