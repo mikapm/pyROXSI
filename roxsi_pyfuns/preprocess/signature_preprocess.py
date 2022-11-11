@@ -12,11 +12,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from scipy.io import loadmat
+from scipy.signal import detrend
 import matplotlib.pyplot as plt
 from datetime import datetime as DT
 from cftime import date2num, num2date
 from astropy.stats import mad_std
 from roxsi_pyfuns import despike as rpd
+from roxsi_pyfuns import transfer_functions as rptf
 
 
 def max_runlen(arr, value):
@@ -56,7 +58,7 @@ class ADCP():
     """
     def __init__(self, datadir, ser, zp=0.08, fs=4, burstlen=1200, 
                  magdec=12.86, outdir=None, mooring_info=None, 
-                 instr='NortekSignature1000'):
+                 patm=None, instr='NortekSignature1000'):
         """
         Initialize ADCP class.
 
@@ -70,10 +72,11 @@ class ADCP():
             outdir - str; if None, save output files in self.datadir,
                      else, specify outdir
             mooring_info - str; path to mooring info excel file (optional)
+            patm - pd.DataFrame time series of atmospheric pressure (optional)
             instr - str; instrument name
         """
         self.datadir = datadir
-        self.ser = ser
+        self.ser = str(ser)
         # Find all .mat files for specified serial number
         self._fns_from_ser()
         self.zp = zp
@@ -94,10 +97,12 @@ class ADCP():
                                      parse_dates=['record_start', 'record_end'])
             # Get mooring ID
             key = 'mooring_ID'
-            self.mid = self.dfm[self.dfm['serial_number']==self.ser][key].item()
+            self.mid = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
         else:
             self.dfm = None # No mooring info dataframe
             self.mid = None # No mooring ID number
+        # Atmospheric pressure time series, if provided
+        self.patm = patm
 
     def _fns_from_ser(self):
         """
@@ -142,7 +147,8 @@ class ADCP():
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
-                     despike_vel=False, despike_ast=True):
+                     despike_vel=False, despike_ast=True, save_nc=True,
+                    ):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
         data into xr.Dataset.
@@ -159,13 +165,24 @@ class ADCP():
                           Tracking (AST) data using Gaussian Process
                           method of Malila et al. (2022) in 20-minute
                           segments.
+            save_nc - bool; if True, saves output dataset to netcdf
+        
+        Returns:
+            ds - xarray.Dataset with data read from input .mat file
+
         """
         # Read .mat structure
         mat = loadmat(fn_mat)
 
-        # Read and convert general time array
-        time_mat, time_arr = self.read_mat_times(mat=mat)
+        # As a sanity check, assert that sampling rate is consistent 
+        # with user-provided value
+        fs_conf = float(mat['Config']['Burst_SamplingRate'].item().squeeze())
+        assert float(self.fs) == fs_conf, \
+            "Given sampling rate fs={} is not consistent with value in .hdr file".format(
+                self.fs)
 
+        # Read and convert general (velocity) time array
+        time_mat, time_arr = self.read_mat_times(mat=mat)
         # Convert time array to numerical format
         time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(
             ref_date)
@@ -177,37 +194,40 @@ class ADCP():
         ast = mat['Data']['Burst_AltimeterDistanceAST'].item().squeeze()
         # Interpolate AST to general time stamps using AST time offsets
         time_ast = pd.Series(pd.to_datetime(time_mat-719529, unit='D'))
-        # Add AST time offsets to time array
+        # Add AST time offsets (fractions of sec) to time array
         ast_offs = mat['Data']['Burst_AltimeterTimeOffsetAST'].item().squeeze()
         for i, offs in enumerate(ast_offs):
             time_ast[i] += pd.Timedelta(seconds=offs)        
-        # Change time format to match dst.time
+        # Change time format to match time_arr
         time_ast = time_ast.dt.to_pydatetime()
-        # Save AST array in pandas Series
-        s = pd.Series(data=ast, index=time_ast)
-        s = s.sort_index() # Sort indices (just in case)
-        # Interpolate AST data to dst.time
-        si = s.reindex(time_arr, method='nearest').interpolate()
+        # Save AST array in xarray DataArray for interpolation
+        da = xr.DataArray(ast,
+                          coords=[time_ast],
+                          dims=['time'],
+                         )
+        # Interpolate AST data to time_arr
+        dai = da.interp(time=time_arr, method='cubic',
+                        kwargs={"fill_value": "extrapolate"}
+                       )
         # Despike AST signal if requested
         if despike_ast:
             # Make dataframe for raw & despiked AST signals
-            df_ast = si.to_frame(name='raw')
+            # df_ast = si.to_frame(name='raw')
+            df_ast = dai.to_dataframe(name='raw')
             # Add despiked column
-            df_ast['des'] = np.ones_like(si.values) * np.nan
+            df_ast['des'] = np.ones_like(dai.values) * np.nan
             # Add column for raw signal minus 20-min mean level
-            df_ast['rdm'] = np.ones_like(si.values) * np.nan
+            df_ast['rdm'] = np.ones_like(dai.values) * np.nan
             # Count number of full 20-minute (1200-sec) segments
-            t0s = si.index[0] # Start timestamp
-            t1s = si.index[-1] # End timestamp
+            t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
+            t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
             nseg = np.floor((t1s - t0s).total_seconds() / 1200)
             # Iterate over approx. 20-min long segments
-            for sn, seg in enumerate(np.array_split(si, nseg)):
+            for sn, seg in enumerate(np.array_split(dai.to_series(), nseg)):
                 # Get segment start and end times
                 t0ss = seg.index[0]
                 t1ss = seg.index[-1]
-                print('seg: {} - {}'.format(t0ss, t1ss))
-                # Remove mean from raw signal and save to dataframe
-                df_ast['rdm'].loc[t0ss:t1ss] = seg - np.nanmean(seg)
+                print('Despike AST seg: {} - {}'.format(t0ss, t1ss))
                 # Despike segment using GP method
                 seg_d, mask_d = self.despike_GP(seg, 
                                                 print_kernel=False,
@@ -215,30 +235,105 @@ class ADCP():
                 # Save despiked segment to correct indices in df_ast
                 df_ast['des'].loc[t0ss:t1ss] = seg_d
 
+        # Also read pressure and reconstruct linear sea-surface elevation
+        pres = mat['Data']['Burst_Pressure'].item().squeeze()
+        # Make pd.Series and convert to eta
+        pres = pd.Series(pres, index=time_arr)
+        dfp = self.p2eta_lin(pres)
+
+        # Also read temperature
+        temp = mat['Data']['Burst_Temperature'].item().squeeze()
+
+        # Read heading, pitch & roll timeseries
+        heading = mat['Data']['Burst_Heading'].item().squeeze()
+        pitch = mat['Data']['Burst_Pitch'].item().squeeze()
+        roll = mat['Data']['Burst_Roll'].item().squeeze()
+
         # Velocities from beams 1-4
         vb1 = mat['Data']['Burst_VelBeam1'].item().squeeze()
         vb2 = mat['Data']['Burst_VelBeam2'].item().squeeze()
         vb3 = mat['Data']['Burst_VelBeam3'].item().squeeze()
         vb4 = mat['Data']['Burst_VelBeam4'].item().squeeze()
+        # 5th beam velocity and time
+        vb5 = mat['Data']['IBurst_VelBeam5'].item().squeeze()
+        tb5 = mat['Data']['IBurst_Time'].item().squeeze()
+        # Convert to datetime
+        tb5 = pd.Series(pd.to_datetime(tb5-719529, unit='D'))
+        tb5 = tb5.dt.to_pydatetime()
+        # Convert to DataArray for interpolation
+        da5 = xr.DataArray(vb5,
+                           coords=[tb5, np.arange(28)],
+                           dims=['time', 'z'],
+                          )
+        # Interpolate 5th beam velocity to beam 1-4 time_arr
+        dai5 = da5.interp(time=time_arr, method='cubic',
+                          kwargs={"fill_value": "extrapolate"}
+                         )
+        # E,N,U velocities
+        vE = mat['Data']['Burst_VelEast'].item().squeeze()
+        vN = mat['Data']['Burst_VelNorth'].item().squeeze()
+        vU1 = mat['Data']['Burst_VelUp1'].item().squeeze()
+        vU2 = mat['Data']['Burst_VelUp2'].item().squeeze()
+        # x,y,z velocities
+        vx = mat['Data']['Burst_VelX'].item().squeeze()
+        vy = mat['Data']['Burst_VelY'].item().squeeze()
+        vz1 = mat['Data']['Burst_VelZ1'].item().squeeze()
+        vz2 = mat['Data']['Burst_VelZ2'].item().squeeze()
+
         # Despike velocities?
         if despike_vel:
             print('Velocity despiking not implemented (yet).')
+
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
-        cell_arr = np.arange(ncells) # Velocity cell levels
+        # Transducer height above bottom (based on Olavo Badaro-Marques'
+        # script Signature1000_proc_lvl_1.m)
+        trans_hab = 31.88 / 100 # [m]
+        # Cell size in meters
+        binsz = mat['Config']['Burst_CellSize'].item().squeeze()
+        # Height of the first cell center relative to transducer
+        # (based on the Principles of Operation manual by Nortek, page 12)
+        bl_dist = mat['Config']['Burst_BlankingDistance'].item().squeeze()
+        hcc_b1 = bl_dist + binsz # height of cell center for bin #1
+        # Get array of cell-center heights
+        cell_centers = hcc_b1 + np.arange(ncells) * binsz
+        # Account for transducer height above sea floor
+        zhab = cell_centers + trans_hab
+
         # Make output dataset and save to netcdf
         ds = xr.Dataset(
-            data_vars={'vb1': (['time', 'cell'], vb1),
-                       'vb2': (['time', 'cell'], vb2),
-                       'vb3': (['time', 'cell'], vb3),
-                       'vb4': (['time', 'cell'], vb4),
-                       # Raw AST (20-min. mean removed)
-                       'astr': (['time'], df_ast['rdm'].values),
-                       # GP-despiked AST (20-min. mean removed)
-                       'astd': (['time'], df_ast['des'].values),
+            data_vars={'vB1': (['time', 'range'], vb1), # Beam coord. vel.
+                       'vB2': (['time', 'range'], vb2),
+                       'vB3': (['time', 'range'], vb3),
+                       'vB4': (['time', 'range'], vb4),
+                       'vB5': (['time', 'range'], dai5.values),
+                       # East, North, Up velocities
+                       'vE': (['time', 'range'], vE),
+                       'vN': (['time', 'range'], vN),
+                       'vU1': (['time', 'range'], vU1),
+                       'vU2': (['time', 'range'], vU2),
+                       # x,y,z velocities
+                       'vX': (['time', 'range'], vx),
+                       'vY': (['time', 'range'], vy),
+                       'vZ1': (['time', 'range'], vz1),
+                       'vZ2': (['time', 'range'], vz2),
+                       # Raw AST 
+                       'ASTr': (['time'], df_ast['raw'].values),
+                       # GP-despiked AST
+                       'ASTd': (['time'], df_ast['des'].values),
+                       # Pressure and reconstructed sea surface
+                       'pressure':  (['time'], dfp['pressure']),
+                       'eta_hyd':  (['time'], dfp['eta_hyd']),
+                       'eta_lin':  (['time'], dfp['eta_lin']),
+                       # Temperature (not calibrated?)
+                       'temperature':  (['time'], temp),
+                       # Heading, pitch, roll
+                       'heading_ang':  (['time'], heading),
+                       'pitch_ang':  (['time'], pitch),
+                       'roll_ang':  (['time'], roll),
                       },
             coords={'time': (['time'], time_arr),
-                    'cell': (['cell'], cell_arr)}
+                    'range': (['range'], zhab)}
             )
         ds = ds.sortby('time') # Sort indices (just in case)
 
@@ -282,7 +377,8 @@ class ADCP():
         z_train[mask_MAD] = np.nan
 
         # GP despiking step (iterative)
-        z_train -= np.nanmean(z_train) 
+        z_mean = np.nanmean(z_train)
+        z_train -= z_mean 
         mask_dropouts = np.isnan(z_train) # Mask for dropouts
         if mask_dropouts.sum() > 0:
             # Compute maximum run length
@@ -386,6 +482,9 @@ class ADCP():
                         # Update scores_in list
                         scores_in = thn['score'].copy()
                     
+            # Add back mean
+            z_desp += z_mean
+
             # If mean R^2 is high enough, return despiked signal
             # and spike mask
             if r2_avg >= r2thresh:
@@ -402,10 +501,56 @@ class ADCP():
                 return z_desp, ms_old
 
 
+    def p2eta_lin(self, pt, rho0=1025, grav=9.81, M=512, fmin=0.05, 
+                  fmax=0.33, att_corr=True,  detrend_out=True, 
+                  return_hyd=True):
+        """
+        Use linear transfer function to reconstruct sea-surface
+        elevation time series from sub-surface pressure measurements.
+
+        If self.patm dataframe of atmospheric pressure is not available,
+        this function assumes that the input time series is the hydrostatic 
+        pressure.
+
+        Parameters:
+            pt - pd.Series; time series of water pressure
+            rho0 - scalar; water density (kg/m^3)
+            grav - scalar; gravitational acceleration (m/s^2)
+            M - int; window segment length (512 by default)
+            fmin - scalar; min. cutoff frequency
+            fmax - scalar; max. cutoff frequency
+            att_corr - bool; if True, applies attenuation correction
+            detrend_out - bool; if True, returns detrended signal
+            return_hyd - bool; if True, returns also hydrostatic pressure head
+        """
+        # Copy input
+        pw = pt.copy()
+        pw = pw.to_frame(name='pressure') # Convert to dataframe
+        # Use hydrostatic assumption to get pressure head with unit [m]
+        pw['eta_hyd'] = rptf.eta_hydrostatic(pw['pressure'], self.patm, 
+            rho0=rho0, grav=grav, interp=True)
+        # Check if hydrostatic pressure is ever above 0
+        if pw['eta_hyd'].max() == 0.0:
+            print('Instrument most likely not in water')
+            # Return NaN array for linear sea surface elevations
+            pw['eta_lin'] = np.ones_like(pw['eta_hyd'].values) * np.nan
+        else:
+            # Apply linear transfer function from p->eta
+            trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+            pw['eta_lin'] = trf.p2eta_lin(pw['eta_hyd'], M=M, fmin=fmin, fmax=fmax,
+                att_corr=att_corr)
+            # Detrend if requested
+            if detrend_out:
+                pw['eta_lin'] = detrend(pw['eta_lin'].values)
+
+        # Return dataframe
+        return pw
+
+
 # Main script
 if __name__ == '__main__':
     """
-    Test script using synthetic example data.
+    Main script for pre-processing Vector Signature1000 raw data.
     """
     from argparse import ArgumentParser
 
@@ -458,12 +603,51 @@ if __name__ == '__main__':
 
         return parser.parse_args(**kwargs)
 
+    # QC plot functions
+    def plot_hpr(ds, fn=None, ser=None):
+        """
+        Plot time series of pressure + heading, pitch and roll 
+        from xr.Dataset.
+
+        Parameters:
+            ds - xr.Dataset with pressure + heading, pitch & roll data
+            fn - str; figure filename (full path). If None, only shows
+                 the figure
+            ser - str; (optional) instrument serial number (or other string)
+                  for plot title
+        """
+        # Initialize figure
+        fig, axes = plt.subplots(figsize=(12,6), nrows=2, sharex=True,
+                                 constrained_layout=True)
+        # On first row plot H,P,R
+        ds.heading_ang.plot(ax=axes[0], label='heading')
+        ds.pitch_ang.plot(ax=axes[0], label='pitch')
+        ds.roll_ang.plot(ax=axes[0], label='roll')
+        # Plot horizontal dashed line at +/-25 deg
+        axes[0].axhline(y=25, linestyle='--', color='k', alpha=0.6)
+        axes[0].axhline(y=-25, linestyle='--', color='k', alpha=0.6)
+        datestr = str(pd.Timestamp(dsv.time[0].values).date())
+        if ser is not None:
+            axes[0].set_title('Nortek Sig1000 {} {}'.format(ser, datestr))
+        else:
+            axes[0].set_title('Nortek Sig1000 {}'.format(datestr))
+        axes[0].set_ylabel('Angle [deg]')
+        axes[0].legend()
+        # On second row plot pressure
+        ds.pressure.plot(ax=axes[1], label='pressure')
+        axes[1].set_ylabel('Pressure [hPa]')
+        axes[1].legend()
+        # Save if filename given
+        plt.tight_layout()
+        if fn is not None:
+            plt.savefig(fn, bbox_inches='tight', dpi=300)
+        else:
+            # Else, show plot
+            plt.show()
+        plt.close()
+
     # Call args parser to create variables out of input arguments
     args = parse_args(args=sys.argv[1:])
-
-    # Define Level1 output directory
-    outdir = os.path.join(args.dr, 'Level1')
-    figdir = os.path.join(outdir, 'img')
 
     # Mooring info excel file path (used when initializing ADV class)
     rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
@@ -480,18 +664,26 @@ if __name__ == '__main__':
     # Iterate through serial numbers and read + preprocess data
     for ser in sers:
         print('Serial number: ', ser)
+        # Define Level1 output directories
+        outdir = os.path.join(args.dr, 'Level1', ser)
+        if not os.path.isdir(outdir):
+            print('Making output dir. {}'.format(outdir))
+            os.mkdir(outdir)
+        figdir = os.path.join(outdir, 'img')
+        if not os.path.isdir(figdir):
+            print('Making output figure dir. {}'.format(figdir))
+            os.mkdir(figdir)
         # Initialize class
         adcp = ADCP(datadir=args.dr, ser=ser, mooring_info=fn_minfo)
-        # Read first mat structure and get start and end timestamps
-        times_mat, times = adcp.read_mat_times(fn_mat=adcp.fns[0])
-        date0 = str(times[0].date()) # Date of first timestamp
-        date1 = str(times[-1].date()) # Date of last timestamp
-        print('t0: {}, t1: {}'.format(date0, date1))
         # Save all datasets for the same date in list for concatenating
-        dsv_daily = []
+        dsv_daily = [] # Velocities and 1D (eg AST) data
+        dse_daily = [] # Echogram data
         # Loop over raw .mat files and save daily data as netcdf
-        for i,fn_mat in enumerate(adcp.fns):
+        for i,fn_mat in enumerate([adcp.fns[0]]):
             # Check if daily netcdf files already exist
+            times_mat, times = adcp.read_mat_times(fn_mat=fn_mat)
+            date0 = str(times[0].date()) # Date of first timestamp
+            date1 = str(times[-1].date()) # Date of last timestamp
             date0_str = ''.join(date0.split('-'))
             date1_str = ''.join(date1.split('-'))
             fn_nc0 = os.path.join(outdir, 
@@ -515,19 +707,34 @@ if __name__ == '__main__':
                     # Append only correct date
                     dsv_daily.append(dsv0)
                     # Concatenate daily datasets and save to netcdf
-                    print('Concatenating daily datasets ...')
+                    print('Concatenating daily datasets for {} ...'.format(
+                        date0))
                     dsd = xr.concat(dsv_daily, dim='time')
-                    print('Saving daily dataset to netCDF ...')
-                    dsd.to_netcdf(fn_nc0)
+                    if not os.path.isfile(fn_nc0):
+                        print('Saving daily dataset for {} to netCDF ...'.format(
+                            date0))
+                        dsd.to_netcdf(fn_nc0)
+                    # Make daily QC plots
+                    fn_hpr = os.path.join(figdir, 'qc_hpr_{}_{}.pdf'.format(
+                        ser, date0_str))
+                    if not os.path.isfile(fn_hpr):
+                        plot_hpr(dsd, fn=fn_hpr, ser=ser)
                     # Make new empty list and append the following day
                     dsv_daily = []
                     dsv1 = dsv.sel(time=date1).copy()
                     dsv_daily.append(dsv1)
-                if i==(len(adcp.fns)-1):
+                if i == (len(adcp.fns)-1):
                     # Last file, save last netcdf
-                    print('Saving last daily dataset to netCDF ...')
                     dsd = xr.concat(dsv_daily, dim='time')
-                    dsd.to_netcdf(fn_nc0)
+                    if not os.path.isfile(fn_nc0):
+                        print('Saving last dataset for {} to netCDF ...'.format(
+                            date0))
+                        dsd.to_netcdf(fn_nc0)
+                    # Make daily QC plots
+                    fn_hpr = os.path.join(figdir, 'qc_hpr_{}_{}.pdf'.format(
+                        ser, date0_str))
+                    if not os.path.isfile(fn_hpr):
+                        plot_hpr(dsd, fn=fn_hpr, ser=ser)
 
 
 
