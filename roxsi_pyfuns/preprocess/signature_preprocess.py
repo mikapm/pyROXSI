@@ -14,6 +14,7 @@ import xarray as xr
 from scipy.io import loadmat
 from scipy.signal import detrend
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from datetime import datetime as DT
 from cftime import date2num, num2date
 from astropy.stats import mad_std
@@ -147,7 +148,7 @@ class ADCP():
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
-                     despike_vel=False, despike_ast=True, save_nc=True,
+                     despike_vel=True, despike_ast=True, save_nc=True,
                     ):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
@@ -190,65 +191,6 @@ class ADCP():
                              calendar='standard', 
                              has_year_zero=True)
 
-        # Acoustic surface tracking distance - AST
-        ast = mat['Data']['Burst_AltimeterDistanceAST'].item().squeeze()
-        # Interpolate AST to general time stamps using AST time offsets
-        time_ast = pd.Series(pd.to_datetime(time_mat-719529, unit='D'))
-        # Add AST time offsets (fractions of sec) to time array
-        ast_offs = mat['Data']['Burst_AltimeterTimeOffsetAST'].item().squeeze()
-        for i, offs in enumerate(ast_offs):
-            time_ast[i] += pd.Timedelta(seconds=offs)        
-        # Change time format to match time_arr
-        time_ast = time_ast.dt.to_pydatetime()
-        # Save AST array in xarray DataArray for interpolation
-        da = xr.DataArray(ast,
-                          coords=[time_ast],
-                          dims=['time'],
-                         )
-        # Interpolate AST data to time_arr
-        dai = da.interp(time=time_arr, method='cubic',
-                        kwargs={"fill_value": "extrapolate"}
-                       )
-        # Despike AST signal if requested
-        if despike_ast:
-            # Make dataframe for raw & despiked AST signals
-            # df_ast = si.to_frame(name='raw')
-            df_ast = dai.to_dataframe(name='raw')
-            # Add despiked column
-            df_ast['des'] = np.ones_like(dai.values) * np.nan
-            # Add column for raw signal minus 20-min mean level
-            df_ast['rdm'] = np.ones_like(dai.values) * np.nan
-            # Count number of full 20-minute (1200-sec) segments
-            t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
-            t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
-            nseg = np.floor((t1s - t0s).total_seconds() / 1200)
-            # Iterate over approx. 20-min long segments
-            for sn, seg in enumerate(np.array_split(dai.to_series(), nseg)):
-                # Get segment start and end times
-                t0ss = seg.index[0]
-                t1ss = seg.index[-1]
-                print('Despike AST seg: {} - {}'.format(t0ss, t1ss))
-                # Despike segment using GP method
-                seg_d, mask_d = self.despike_GP(seg, 
-                                                print_kernel=False,
-                                               )
-                # Save despiked segment to correct indices in df_ast
-                df_ast['des'].loc[t0ss:t1ss] = seg_d
-
-        # Also read pressure and reconstruct linear sea-surface elevation
-        pres = mat['Data']['Burst_Pressure'].item().squeeze()
-        # Make pd.Series and convert to eta
-        pres = pd.Series(pres, index=time_arr)
-        dfp = self.p2eta_lin(pres)
-
-        # Also read temperature
-        temp = mat['Data']['Burst_Temperature'].item().squeeze()
-
-        # Read heading, pitch & roll timeseries
-        heading = mat['Data']['Burst_Heading'].item().squeeze()
-        pitch = mat['Data']['Burst_Pitch'].item().squeeze()
-        roll = mat['Data']['Burst_Roll'].item().squeeze()
-
         # Velocities from beams 1-4
         vb1 = mat['Data']['Burst_VelBeam1'].item().squeeze()
         vb2 = mat['Data']['Burst_VelBeam2'].item().squeeze()
@@ -280,10 +222,6 @@ class ADCP():
         vz1 = mat['Data']['Burst_VelZ1'].item().squeeze()
         vz2 = mat['Data']['Burst_VelZ2'].item().squeeze()
 
-        # Despike velocities?
-        if despike_vel:
-            print('Velocity despiking not implemented (yet).')
-
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
         # Transducer height above bottom (based on Olavo Badaro-Marques'
@@ -300,44 +238,234 @@ class ADCP():
         # Account for transducer height above sea floor
         zhab = cell_centers + trans_hab
 
+        # Acoustic surface tracking distance - AST
+        ast = mat['Data']['Burst_AltimeterDistanceAST'].item().squeeze()
+        # Interpolate AST to general time stamps using AST time offsets
+        time_ast = pd.Series(pd.to_datetime(time_mat-719529, unit='D'))
+        # Add AST time offsets (fractions of sec) to time array
+        ast_offs = mat['Data']['Burst_AltimeterTimeOffsetAST'].item().squeeze()
+        for i, offs in enumerate(ast_offs):
+            time_ast[i] += pd.Timedelta(seconds=offs)        
+        # Change time format to match time_arr
+        time_ast = time_ast.dt.to_pydatetime()
+        # Save AST array in xarray DataArray for interpolation
+        da = xr.DataArray(ast,
+                          coords=[time_ast],
+                          dims=['time'],
+                         )
+        # Interpolate AST data to time_arr
+        dai = da.interp(time=time_arr, method='cubic',
+                        kwargs={"fill_value": "extrapolate"}
+                       )
+        # Make dataframe for raw & despiked AST signals
+        df_ast = dai.to_dataframe(name='raw')
+        # Despike AST signal if requested
+        if despike_ast:
+            # Add despiked column
+            df_ast['des'] = np.ones_like(dai.values) * np.nan
+            # Add column for raw signal minus 20-min mean level
+            df_ast['rdm'] = np.ones_like(dai.values) * np.nan
+            # Count number of full 20-minute (1200-sec) segments
+            t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
+            t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
+            nseg = np.floor((t1s - t0s).total_seconds() / 1200)
+            # Iterate over approx. 20-min long segments
+            for sn, seg in enumerate(np.array_split(dai.to_series(), nseg)):
+                # Get segment start and end times
+                t0ss = seg.index[0]
+                t1ss = seg.index[-1]
+                print('Despike AST seg: {} - {}'.format(t0ss, t1ss))
+                # Despike segment using GP method
+                seg_d, mask_d = self.despike_GP(seg, 
+                                                print_kernel=False,
+                                               )
+                # Save despiked segment to correct indices in df_ast
+                df_ast['des'].loc[t0ss:t1ss] = seg_d
+
+        # Despike velocities?
+        if despike_vel:
+            print('Despiking velocities ...')
+            # Initialize arrays
+            vEd = np.ones_like(vE) * np.nan
+            vNd = np.ones_like(vN) * np.nan
+            vU1d = np.ones_like(vU1) * np.nan
+            vU2d = np.ones_like(vU2) * np.nan
+            # Despike each vertical cell at a time
+            for j, zr in tqdm(enumerate(zhab)):
+                # Despike in 20-min bursts
+                dfe = pd.DataFrame(data={'raw':vE[:,j].copy(),
+                                         'des':np.ones_like(vE[:,j])*np.nan,
+                                        }, 
+                                    index=time_arr)
+                nseg = (dfe.index[-1] - dfe.index[0]).total_seconds() / 1200
+                for sn, seg in enumerate(np.array_split(dfe['raw'], np.floor(nseg))):
+                    # Get segment start and end times
+                    t0ss = seg.index[0]
+                    t1ss = seg.index[-1]
+                    # Only despike if range reading below min AST measurement
+                    if despike_ast:
+                        # Use despiked AST signal if available
+                        ast_min = df_ast['des'].loc[t0ss:t1ss].min()
+                    else:
+                        ast_min = df_ast['raw'].loc[t0ss:t1ss].min()
+                    if zr < ast_min:
+                        dfe['des'].loc[t0ss:t1ss] = self.despike_GN02(
+                            seg.values.squeeze())
+                vEd[:,j] = dfe['des'].values
+                # North velocity for current range
+                dfn = pd.DataFrame(data={'raw':vN[:,j].copy(),
+                                         'des':np.ones_like(vN[:,j])*np.nan,
+                                        }, 
+                                    index=time_arr)
+                nseg = (dfn.index[-1] - dfn.index[0]).total_seconds() / 1200
+                for sn, seg in enumerate(np.array_split(dfn['raw'], np.floor(nseg))):
+                    t0ss = seg.index[0]
+                    t1ss = seg.index[-1]
+                    if zr < ast_min:
+                        dfn['des'].loc[t0ss:t1ss] = self.despike_GN02(
+                            seg.values.squeeze())
+                vNd[:,j] = dfn['des'].values            
+                # Up1 velocity
+                dfu1 = pd.DataFrame(data={'raw':vU1[:,j].copy(),
+                                          'des':np.ones_like(vU1[:,j])*np.nan,
+                                         }, 
+                                    index=time_arr)
+                nseg = (dfu1.index[-1] - dfu1.index[0]).total_seconds() / 1200
+                for sn, seg in enumerate(np.array_split(dfu1['raw'], np.floor(nseg))):
+                    t0ss = seg.index[0]
+                    t1ss = seg.index[-1]
+                    if zr < ast_min:
+                        dfu1['des'].loc[t0ss:t1ss] = self.despike_GN02(
+                            seg.values.squeeze())
+                vU1d[:,j] = dfu1['des'].values
+                # Up2 velocity
+                dfu2 = pd.DataFrame(data={'raw':vU2[:,j].copy(),
+                                          'des':np.ones_like(vU2[:,j])*np.nan,
+                                         }, 
+                                    index=time_arr)
+                nseg = (dfu2.index[-1] - dfu2.index[0]).total_seconds() / 1200
+                for sn, seg in enumerate(np.array_split(dfu2['raw'], np.floor(nseg))):
+                    t0ss = seg.index[0]
+                    t1ss = seg.index[-1]
+                    if zr < ast_min:
+                        dfu2['des'].loc[t0ss:t1ss] = self.despike_GN02(
+                            seg.values.squeeze())
+                vU2d[:,j] = dfu2['des'].values
+
+        # Also read pressure and reconstruct linear sea-surface elevation
+        pres = mat['Data']['Burst_Pressure'].item().squeeze()
+        # Make pd.Series and convert to eta
+        pres = pd.Series(pres, index=time_arr)
+        dfp = self.p2eta_lin(pres)
+
+        # Also read temperature
+        temp = mat['Data']['Burst_Temperature'].item().squeeze()
+
+        # Read heading, pitch & roll timeseries
+        heading = mat['Data']['Burst_Heading'].item().squeeze()
+        pitch = mat['Data']['Burst_Pitch'].item().squeeze()
+        roll = mat['Data']['Burst_Roll'].item().squeeze()
+
+        # Define variable dictionary for output dataset
+        data_vars={'vB1': (['time', 'range'], vb1), # Beam coord. vel.
+                   'vB2': (['time', 'range'], vb2),
+                   'vB3': (['time', 'range'], vb3),
+                   'vB4': (['time', 'range'], vb4),
+                   'vB5': (['time', 'range'], dai5.values),
+                   # East, North, Up velocities
+                   'vE': (['time', 'range'], vE),
+                   'vN': (['time', 'range'], vN),
+                   'vU1': (['time', 'range'], vU1),
+                   'vU2': (['time', 'range'], vU2),
+                   # x,y,z velocities
+                   'vX': (['time', 'range'], vx),
+                   'vY': (['time', 'range'], vy),
+                   'vZ1': (['time', 'range'], vz1),
+                   'vZ2': (['time', 'range'], vz2),
+                   # Raw AST 
+                   'ASTr': (['time'], df_ast['raw'].values),
+                   # Pressure and reconstructed sea surface
+                   'pressure':  (['time'], dfp['pressure']),
+                   'eta_hyd':  (['time'], dfp['eta_hyd']),
+                   'eta_lin':  (['time'], dfp['eta_lin']),
+                   # Temperature (not calibrated?)
+                   'temperature':  (['time'], temp),
+                   # Heading, pitch, roll
+                   'heading_ang':  (['time'], heading),
+                   'pitch_ang':  (['time'], pitch),
+                   'roll_ang':  (['time'], roll),
+                   }
+        # Add despiked arrays if available
+        if despike_ast:
+            # GP-despiked AST
+            data_vars['ASTd'] = (['time'], df_ast['des'].values)
+        if despike_vel:
+            # Despiked East, North, Up velocities
+            data_vars['vEd'] = (['time', 'range'], vEd)
+            data_vars['vNd'] = (['time', 'range'], vNd)
+            data_vars['vU1d'] = (['time', 'range'], vU1d)
+            data_vars['vU2d'] = (['time', 'range'], vU2d)
+
         # Make output dataset and save to netcdf
-        ds = xr.Dataset(
-            data_vars={'vB1': (['time', 'range'], vb1), # Beam coord. vel.
-                       'vB2': (['time', 'range'], vb2),
-                       'vB3': (['time', 'range'], vb3),
-                       'vB4': (['time', 'range'], vb4),
-                       'vB5': (['time', 'range'], dai5.values),
-                       # East, North, Up velocities
-                       'vE': (['time', 'range'], vE),
-                       'vN': (['time', 'range'], vN),
-                       'vU1': (['time', 'range'], vU1),
-                       'vU2': (['time', 'range'], vU2),
-                       # x,y,z velocities
-                       'vX': (['time', 'range'], vx),
-                       'vY': (['time', 'range'], vy),
-                       'vZ1': (['time', 'range'], vz1),
-                       'vZ2': (['time', 'range'], vz2),
-                       # Raw AST 
-                       'ASTr': (['time'], df_ast['raw'].values),
-                       # GP-despiked AST
-                       'ASTd': (['time'], df_ast['des'].values),
-                       # Pressure and reconstructed sea surface
-                       'pressure':  (['time'], dfp['pressure']),
-                       'eta_hyd':  (['time'], dfp['eta_hyd']),
-                       'eta_lin':  (['time'], dfp['eta_lin']),
-                       # Temperature (not calibrated?)
-                       'temperature':  (['time'], temp),
-                       # Heading, pitch, roll
-                       'heading_ang':  (['time'], heading),
-                       'pitch_ang':  (['time'], pitch),
-                       'roll_ang':  (['time'], roll),
-                      },
-            coords={'time': (['time'], time_arr),
-                    'range': (['range'], zhab)}
+        ds = xr.Dataset(data_vars=data_vars,
+                        coords={'time': (['time'], time_arr),
+                                'range': (['range'], zhab)}
             )
         ds = ds.sortby('time') # Sort indices (just in case)
 
         return ds
+
+
+    def despike_GN02(self, u, interp='linear', sec_lim=2, corrd=True, 
+                     min_new_spikes=10, max_iter=3):
+        """
+        Despike Nortek Vector velocities using low correlation values
+        to discard unreliable measurements following the Goring and
+        Nikora (2002, J. Hydraul. Eng.) phase space method, including the
+        modifications by Wahl (2003, J. Hydraul. Eng.) and Mori et al.
+        (2007, J. Eng. Mech.).
+
+        Parameters:
+            u - array; 1D array with velocity time series.
+            interp - str; interpolation method for discarded data.
+                          Options: see pandas.DataFrame.interpolate()
+            sec_lim - scalar; maximum gap size to interpolate (sec)
+            corrd - bool; if True, input velocities are correlation-
+                    corrected by self.despike_correlations()
+            min_new_spikes - int; iterate until number of new spikes detected 
+                             is lower than this value. 
+            max_iter - int; maximum number of despiking iterations
+        
+        Returns:
+            ud - Despiked velocity array.
+        """
+ 
+        # Copy velocity array so we don't change the input
+        ud = u.copy()
+        # Make into pd.Series for easier interpolation
+        ud = pd.Series(ud)
+        
+        # Initialize counter of new spikes detected
+        n_spikes = min_new_spikes + 1
+        # Initialize iteraction counter
+        cnt = 0
+        # Iterate until sufficiently low number of new spikes detected
+        while n_spikes > min_new_spikes or cnt < max_iter:
+            # Detect spikes using 3D phase space method
+            mask = rpd.phase_space_3d(ud)
+            # Convert detected spikes to NaN
+            ud[mask] = np.nan
+            # Interpolate according to requested method
+            ud.interpolate(method=interp, limit=sec_lim*self.fs, 
+                           inplace=True)
+            # Count number of spikes detected
+            n_spikes = mask.sum()
+            # Add to iteration counter
+            cnt += 1
+            if n_spikes < min_new_spikes or cnt >= max_iter:
+                break
+
+        return ud.values
 
 
     def despike_GP(self, arr, r2thresh=0.9, max_dropouts_perc=20, 
@@ -679,7 +807,7 @@ if __name__ == '__main__':
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
         # Loop over raw .mat files and save daily data as netcdf
-        for i,fn_mat in enumerate([adcp.fns[0]]):
+        for i,fn_mat in enumerate(adcp.fns):
             # Check if daily netcdf files already exist
             times_mat, times = adcp.read_mat_times(fn_mat=fn_mat)
             date0 = str(times[0].date()) # Date of first timestamp
