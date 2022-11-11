@@ -446,7 +446,7 @@ def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
     # Estimate the rotation angle theta of the principal axis 
     # of u versus du2 using the cross correlation. 
     # (for u vs. du1 and du1 vs. du2, theta = 0 due to symmetry)
-    theta = np.arctan2(np.dot(u, du2), np.sum(u**2, dtype=float))
+    theta = np.arctan2(np.dot(u, du2), np.sum(u**2).astype(float))
 
     # Look for outliers in 3D phase space
     # Following the func_excludeoutlier_ellipsoid3d.m Matlab script 
