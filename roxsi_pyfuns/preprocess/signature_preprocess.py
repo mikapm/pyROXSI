@@ -688,13 +688,14 @@ if __name__ == '__main__':
         parser.add_argument("-dr", 
                 help=("Path to data root directory"),
                 type=str,
-                default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
+                # default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
+                default='/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
                 )
         parser.add_argument("-ser", 
                 help=('Instrument serial number. To loop through all, select "ALL".'),
                 type=str,
                 choices=['103088', '103094', '103110', '103063', '103206'],
-                default='103063',
+                default='103094',
                 )
         parser.add_argument("-M", 
                 help=("Pressure transform segment window length"),
@@ -792,6 +793,8 @@ if __name__ == '__main__':
     # Iterate through serial numbers and read + preprocess data
     for ser in sers:
         print('Serial number: ', ser)
+        # Define input datadir
+        datadir = os.path.join(args.dr, 'raw', ser)
         # Define Level1 output directories
         outdir = os.path.join(args.dr, 'Level1', ser)
         if not os.path.isdir(outdir):
@@ -802,7 +805,7 @@ if __name__ == '__main__':
             print('Making output figure dir. {}'.format(figdir))
             os.mkdir(figdir)
         # Initialize class
-        adcp = ADCP(datadir=args.dr, ser=ser, mooring_info=fn_minfo)
+        adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo)
         # Save all datasets for the same date in list for concatenating
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
