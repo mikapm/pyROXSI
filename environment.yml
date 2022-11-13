@@ -1,0 +1,17 @@
+name: roxsi
+channels:
+  - conda-forge
+dependencies:
+  - python=>3.9
+  - numpy
+  - scipy
+  - pandas
+  - xarray
+  - statsmodels
+  - matplotlib
+  - sklearn
+  - cftime
+  - cf_xarray
+  - astropy
+  - netcdf4
+  - tqdm
