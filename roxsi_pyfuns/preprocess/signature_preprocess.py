@@ -20,6 +20,7 @@ from cftime import date2num, num2date
 from astropy.stats import mad_std
 from roxsi_pyfuns import despike as rpd
 from roxsi_pyfuns import transfer_functions as rptf
+from roxsi_pyfuns import wave_spectra as rpws
 
 
 def max_runlen(arr, value):
@@ -673,6 +674,66 @@ class ADCP():
 
         # Return dataframe
         return pw
+        
+    def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200):
+        """
+        Estimate wave spectra from ADCP data in the input dataset ds.
+        Uses the despiked N&E velocities and AST surface elevation
+        timeseries by default. Returns new dataset with spectra and
+        some bulk parameters.
+
+        Parameters:
+            ds - input xr.Dataset. Must include variables for u,v,z
+            u - str; key for desired u variable in ds
+            v - str; key for desired v variable in ds
+            z - str; key for desired z variable in ds
+            seglen - scalar; spectral segment length in seconds 
+
+        Returns:
+            dss_concat - combined dataset of spectral segments
+        """
+        # Interpolate E&N velocities and AST data
+        vEd = ds[u].interpolate_na(dim='time',
+            fill_value="extrapolate").isel(range=1).values
+        zEd = pd.Series(zEd, index=ds.time.values)
+        vNd = ds[v].interpolate_na(dim='time',
+            fill_value="extrapolate").isel(range=1).values
+        zNd = pd.Series(zNd, index=ds.time.values)
+        zA = ds[z].interpolate_na(dim='time',
+            fill_value="extrapolate").values
+        zA = pd.Series(zA, index=ds.time.values)
+        # Count number of full 20-minute (1200-sec) segments
+        t0s = pd.Timestamp(zA.index[0]) # Start timestamp
+        t1s = pd.Timestamp(zA.index[-1]) # End timestamp
+        nseg = np.round((t1s - t0s).total_seconds() / 1200)
+        print('Estimating spectra ...')
+        dss_list = [] # Empty list for concatenating
+        for sn, seg in enumerate(np.array_split(zA, nseg)):
+            # Get segment start and end times
+            t0ss = seg.index[0]
+            print('seg start: {}'.format(t0ss))
+            print('seg start (round): {}'.format(
+                pd.Timestamp(t0ss).round('1H')))
+            t1ss = seg.index[-1]
+            # Estimate spectra from 20-min. segments
+            dss = rpws.spec_uvz(z=zA.loc[t0ss:t1ss], 
+                                u=vEd.loc[t0ss:t1ss], 
+                                v=vNd.loc[t0ss:t1ss], 
+                                fs=adcp.fs,
+                                timestamp=pd.Timestamp(t0ss).round('1H'),
+                                )
+            # Append to list
+            dss_list.append(dss)
+        # Concatenate all spectrum datasets into one
+        dss_concat = xr.concat(dss_list, dim='time')
+
+        return dss_concat
+
+
+    def save_spec_nc(self, ds, fn):
+        """
+        Save wave spectrum dataset ds to netcdf format.
+        """
 
 
 # Main script
@@ -689,7 +750,7 @@ if __name__ == '__main__':
                 help=("Path to data root directory"),
                 type=str,
                 # default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
-                default='/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
+                default=r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
                 )
         parser.add_argument("-ser", 
                 help=('Instrument serial number. To loop through all, select "ALL".'),
@@ -790,6 +851,35 @@ if __name__ == '__main__':
         # Only process one serial number
         sers = [args.ser]
 
+    # UVZ spectra test
+    df = pd.read_csv('test_uvz.csv', parse_dates=['time']).set_index('time')
+    dss = rpws.spec_uvz(z=df['z'].values, u=df['u'].values, 
+        v=df['v'].values, fs=4, fmin=0.05, fmax=0.33, 
+        timestamp=pd.Timestamp(df.index[0].round('1H')))
+
+    # Read atmospheric pressure time series and calculate
+    # atmospheric pressure anomaly
+    fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
+    if not os.path.isfile(fn_patm):
+        # csv file does not exist -> read mat file and generate dataframe
+        fn_matp = os.path.join(rootdir, 'noaa_atm_pres_simple.mat')
+        mat = loadmat(fn_matp)
+        mat_pres = mat['A']['atm_pres'].item().squeeze()
+        mat_time = mat['A']['time_vec'].item().squeeze() # In Matlab char() format
+        # Make into pandas dataframe
+        dfa = pd.DataFrame(data={'hpa':mat_pres}, 
+                           index=pd.to_datetime(mat_time))
+        dfa.index.rename('time', inplace=True)
+        # convert from mbar to hpa
+        dfa['hpa'] /= 100
+        dfa['hpa'] -= 0.032 # Empirical correction factor
+        # Calculate anomaly from mean
+        dfa['hpa_anom'] = dfa['hpa'] - dfa['hpa'].mean()
+        # Save as csv
+        dfa.to_csv(fn_patm)
+    else:
+        dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
+
     # Iterate through serial numbers and read + preprocess data
     for ser in sers:
         print('Serial number: ', ser)
@@ -810,7 +900,7 @@ if __name__ == '__main__':
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
         # Loop over raw .mat files and save daily data as netcdf
-        for i,fn_mat in enumerate(adcp.fns):
+        for i,fn_mat in enumerate(adcp.fns[50:52]):
             # Check if daily netcdf files already exist
             times_mat, times = adcp.read_mat_times(fn_mat=fn_mat)
             date0 = str(times[0].date()) # Date of first timestamp
@@ -845,6 +935,11 @@ if __name__ == '__main__':
                         print('Saving daily dataset for {} to netCDF ...'.format(
                             date0))
                         dsd.to_netcdf(fn_nc0)
+
+                    # Estimate 20-min. wave spectra 
+                    dss_daily = adcp.wavespec(dsd, seglen=1200)
+                    # Save spectra to netCDF
+
                     # Make daily QC plots
                     fn_hpr = os.path.join(figdir, 'qc_hpr_{}_{}.pdf'.format(
                         ser, date0_str))
@@ -861,6 +956,11 @@ if __name__ == '__main__':
                         print('Saving last dataset for {} to netCDF ...'.format(
                             date0))
                         dsd.to_netcdf(fn_nc0)
+
+                    # Estimate 20-min. wave spectra 
+                    dss_daily = adcp.wavespec(dsd, seglen=1200)
+                    # Save spectra to netCDF
+
                     # Make daily QC plots
                     fn_hpr = os.path.join(figdir, 'qc_hpr_{}_{}.pdf'.format(
                         ser, date0_str))
