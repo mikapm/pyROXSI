@@ -74,7 +74,7 @@ def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
 
     Parameters:
         pt - pd.Series; time series (w/ time index) of water pressure (hPa)
-        patm - pd.Series; time series of atmospheric pressure (hPa)
+        patm - pd.Series; time series of atmospheric pressure anomaly (hPa)
         rho0 - scalar; water density (kg/m^3)
         grav - scalar; gravitational acceleration (m/s^2)
         interp - bool; if True, interpolate atmospheric pressure to 
@@ -93,8 +93,8 @@ def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
             dfa = dfa.reindex(pt.index, method='bfill').interpolate()
         # Concatenate input arrays
         df = pd.concat([pw, dfa], axis=1)
-        # Correct for atmospheric pressure
-        df['eta_hyd'] = df['pressure'] - df['hpa']
+        # Correct for atmospheric pressure anomaly
+        df['eta_hyd'] = df['pressure'] - df['hpa_anom']
     else:
         # Do not correct for atmospheric pressure
         df = pw.copy()
