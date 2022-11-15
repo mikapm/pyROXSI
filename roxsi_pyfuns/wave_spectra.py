@@ -378,7 +378,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         # Energy period
         fe = np.sum(f * E) / np.sum(E)
         ds['T_energy'] = (['time'], np.atleast_1d(1 / fe))
-        # Peak period
+        # Peak period (by index of max. energy)
         ds['Tp_ind'] = (['time'], np.atleast_1d(1/f[E==E.max()][0]))
         # Peak period following Young (1995)
         fpy = peak_freq(E, f)
