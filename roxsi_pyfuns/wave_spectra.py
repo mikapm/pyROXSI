@@ -227,14 +227,6 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
                        )
 
 
-    # Attributes
-#     ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
-#     ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum'
-#     ds.Ezz.attrs['units'] = 'm^2/Hz'
-#     ds.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
-#     ds.freq.attrs['long_name'] = 'spectral frequencies Hz'
-#     ds.freq.attrs['units'] = 'Hz'
-
     # Loop over u, v and z and split into windows
     for i, key in zip(range(int(ndim)), order):
         arr = zuv[i,:].copy() # Copy current array
@@ -347,7 +339,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         dirs[eastdirs] += 180 
         # Directional spread
         spread = 180 / 3.14 * spread1
-        ds['dirsp'] = (['freq'], spread)
+        ds['dspr'] = (['freq'], spread)
         # Dominant direction
         Dp = dirs[fpind] # Dominant (peak) direction, use peak f
         # Screen for bad direction estimate,     
@@ -372,12 +364,12 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     # Save scalar variables with time coordinate if specified
     if timestamp is not None:
         # Peak direction
-        ds['Dp'] = (['time'], np.atleast_1d(Dp.item()))
+        ds['Dp_ind'] = (['time'], np.atleast_1d(Dp))
         # Significant wave height
         ds['Hm0'] = (['time'], np.atleast_1d(4*np.sqrt(np.sum(E)*bandwidth)))
         # Energy period
         fe = np.sum(f * E) / np.sum(E)
-        ds['T_energy'] = (['time'], np.atleast_1d(1 / fe))
+        ds['Te'] = (['time'], np.atleast_1d(1 / fe))
         # Peak period (by index of max. energy)
         ds['Tp_ind'] = (['time'], np.atleast_1d(1/f[E==E.max()][0]))
         # Peak period following Young (1995)
@@ -387,16 +379,16 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         indpy = (np.abs(f - fpy)).argmin()
         Dpy = dirs[indpy]
         ds['Dp_Y95'] = (['time'], np.atleast_1d(Dpy))
-        # Spectral bandwidth following Longuet-Higgins (1975)
-        ds['nu_LH75'] = (['time'], np.atleast_1d(spec_bandwidth(E, f)))
+        # Spectral bandwidth following Longuet-Higgins (1957)
+        ds['nu_LH57'] = (['time'], np.atleast_1d(spec_bandwidth(E, f)))
     else:
         # Peak direction
-        ds['Dp_ind'] = ([], Dp.item())
+        ds['Dp_ind'] = ([], Dp)
         # Significant wave height
         ds['Hm0'] = ([], 4 * np.sqrt(np.sum(E)*bandwidth))
         # Energy period
         fe = np.sum(f * E) / np.sum(E)
-        ds['T_energy'] = ([], 1 / fe)
+        ds['Te'] = ([], 1 / fe)
         # Peak period
         ds['Tp_ind'] = ([], 1/f[E==E.max()][0])
         # Peak period following Young (1995)
@@ -406,14 +398,14 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         indpy = (np.abs(f - fpy)).argmin()
         Dpy = dirs[indpy]
         ds['Dp_Y95'] = ([], Dpy)
-        # Spectral bandwidth following Longuet-Higgins (1975)
-        ds['nu_LH75'] = ([], spec_bandwidth(E, f))
+        # Spectral bandwidth following Longuet-Higgins (1957)
+        ds['nu_LH57'] = ([], spec_bandwidth(E, f))
 
     # Save fmin, fmax in scalar variable attributes
     ds['Hm0'].attrs['fmin'] = fmin
     ds['Hm0'].attrs['fmax'] = fmax
-    ds['T_energy'].attrs['fmin'] = fmin
-    ds['T_energy'].attrs['fmax'] = fmax
+    ds['Te'].attrs['fmin'] = fmin
+    ds['Te'].attrs['fmax'] = fmax
     ds['Tp_ind'].attrs['fmin'] = fmin
     ds['Tp_ind'].attrs['fmax'] = fmax
     ds['Tp_Y95'].attrs['fmin'] = fmin
