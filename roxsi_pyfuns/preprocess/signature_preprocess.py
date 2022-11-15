@@ -309,6 +309,9 @@ class ADCP():
                         ast_min = df_ast['des'].loc[t0ss:t1ss].min()
                     else:
                         ast_min = df_ast['raw'].loc[t0ss:t1ss].min()
+                    # Subtract half of a binsize from ast_min (b/c
+                    # range values are in middles of bins)
+                    ast_min -= binsz / 2
                     if zr < ast_min:
                         dfe['des'].loc[t0ss:t1ss] = self.despike_GN02(
                             seg.values.squeeze())
@@ -319,10 +322,12 @@ class ADCP():
                                         }, 
                                     index=time_arr)
                 nseg = (dfn.index[-1] - dfn.index[0]).total_seconds() / 1200
+                # Split to nseg segments
                 for sn, seg in enumerate(np.array_split(dfn['raw'], np.floor(nseg))):
                     t0ss = seg.index[0]
                     t1ss = seg.index[-1]
                     if zr < ast_min:
+                        # Bin range below min AST value -> despike
                         dfn['des'].loc[t0ss:t1ss] = self.despike_GN02(
                             seg.values.squeeze())
                 vNd[:,j] = dfn['des'].values            
@@ -332,6 +337,7 @@ class ADCP():
                                          }, 
                                     index=time_arr)
                 nseg = (dfu1.index[-1] - dfu1.index[0]).total_seconds() / 1200
+                # Split to nseg segments
                 for sn, seg in enumerate(np.array_split(dfu1['raw'], np.floor(nseg))):
                     t0ss = seg.index[0]
                     t1ss = seg.index[-1]
@@ -345,6 +351,7 @@ class ADCP():
                                          }, 
                                     index=time_arr)
                 nseg = (dfu2.index[-1] - dfu2.index[0]).total_seconds() / 1200
+                # Split to nseg segments
                 for sn, seg in enumerate(np.array_split(dfu2['raw'], np.floor(nseg))):
                     t0ss = seg.index[0]
                     t1ss = seg.index[-1]
@@ -632,7 +639,7 @@ class ADCP():
 
     def p2eta_lin(self, pt, rho0=1025, grav=9.81, M=512, fmin=0.05, 
                   fmax=0.33, att_corr=True,  detrend_out=True, 
-                  return_hyd=True):
+                 ):
         """
         Use linear transfer function to reconstruct sea-surface
         elevation time series from sub-surface pressure measurements.
@@ -650,7 +657,6 @@ class ADCP():
             fmax - scalar; max. cutoff frequency
             att_corr - bool; if True, applies attenuation correction
             detrend_out - bool; if True, returns detrended signal
-            return_hyd - bool; if True, returns also hydrostatic pressure head
         """
         # Copy input
         pw = pt.copy()
@@ -674,6 +680,7 @@ class ADCP():
 
         # Return dataframe
         return pw
+
         
     def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200):
         """
@@ -730,10 +737,153 @@ class ADCP():
         return dss_concat
 
 
-    def save_spec_nc(self, ds, fn):
+    def save_spec_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
+                     ref_date=pd.Timestamp('2022-06-25'), ):
         """
         Save wave spectrum dataset ds to netcdf format.
+
+        Parameters:
+            ds - input spectral xr.Dataset
+            fn - str; path for netcdf filename
+            overwrite - bool; if False, does not overwrite existing file
+            fillvalue - scalar; fill value to denote missing values
+            ref_date - reference date to use for time axis
         """
+        # Check if file already exists
+        if os.path.isfile(self.fn_nc) and not overwrite:
+            # Read and return existing dataset
+            print('Requested netCDF file already exists. Set overwrite=True to overwrite.')
+            return 
+        # Set requested fill value
+        ds = ds.fillna(fillvalue)
+        # Convert time array to numerical format
+        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
+        time_vals = date2num(ds.time.values, time_units, calendar='standard', 
+                             has_year_zero=True)
+        ds.coords['time'] = time_vals
+        # Make lon, lat coordinates
+        ds = ds.assign_coords(lon=[36.6250768146788])
+        ds = ds.assign_coords(lat=[-121.94334673203694])
+        # Set variable attributes for output netcdf file
+        ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
+        ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum from AST'
+        ds.Ezz.units = 'm^2/Hz'
+        ds.Evv.units = 'm^2/Hz'
+        ds.Evv.attrs['standard_name'] = 'northward_sea_water_velocity_variance_spectral_density'
+        ds.Evv.attrs['long_name'] = 'auto displacement spectrum from northward velocity component'
+        ds.Euu.units = 'm^2/Hz'
+        ds.Euu.attrs['standard_name'] = 'eastward_sea_water_velocity_variance_spectral_density'
+        ds.Euu.attrs['long_name'] = 'auto displacement spectrum from eastward velocity component'
+        ds.a1.attrs['units'] = 'dimensionless'
+        ds.a1.attrs['standard_name'] = 'a1_directional_fourier_component'
+        ds.a1.attrs['long_name'] = 'a1 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.a2.attrs['units'] = 'dimensionless'
+        ds.a2.attrs['standard_name'] = 'a2_directional_fourier_component'
+        ds.a2.attrs['long_name'] = 'a2 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.b1.attrs['units'] = 'dimensionless'
+        ds.b1.attrs['standard_name'] = 'b1_directional_fourier_component'
+        ds.b1.attrs['long_name'] = 'b1 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.b2.attrs['units'] = 'dimensionless'
+        ds.b2.attrs['standard_name'] = 'b2_directional_fourier_component'
+        ds.b2.attrs['long_name'] = 'b2 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.dspr.attrs['units'] = 'angular_degree'
+        ds.dspr.attrs['standard_name'] = 'sea_surface_wind_wave_directional_spread'
+        ds.dspr.attrs['long_name'] = 'directional spread as a function of frequency'
+        ds.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
+        ds.freq.attrs['long_name'] = 'spectral frequencies Hz'
+        ds.freq.units = 'Hz'
+        ds.lat.attrs['standard_name'] = 'latitude'
+        ds.lat.attrs['long_name'] = 'Approximate latitude of small-scale array rock summit'
+        ds.lat.attrs['units'] = 'degrees_north'
+        ds.lat.attrs['valid_min'] = -90.0
+        ds.lat.attrs['valid_max'] = 90.0
+        ds.lon.attrs['standard_name'] = 'longitude'
+        ds.lon.attrs['long_name'] = 'Approximate longitude of small-scale array rock summit'
+        ds.lon.attrs['units'] = 'degrees_east'
+        ds.lon.attrs['valid_min'] = -180.0
+        ds.lon.attrs['valid_max'] = 180.0
+        ds.time.encoding['units'] = time_units
+        ds.time.attrs['units'] = time_units
+        ds.time.attrs['standard_name'] = 'time'
+        ds.time.attrs['long_name'] = 'Local time (PDT) of spectral segment start'
+        # Sig. wave height and other integrated parameters
+        ds.Hm0.attrs['units'] = 'm'
+        ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
+        ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
+        ds.Te.attrs['units'] = 's'
+        ds.Te.attrs['standard_name'] = 'sea_surface_wave_energy_period'
+        ds.Te.attrs['long_name'] = 'energy-weighted wave period'
+        ds.Tp_ind.attrs['units'] = 's'
+        ds.Tp_ind.attrs['standard_name'] = 'sea_surface_primary_swell_wave_period_at_variance_spectral_density_maximum'
+        ds.Tp_ind.attrs['long_name'] = 'wave period at maximum spectral energy'
+        ds.Tp_Y95.attrs['units'] = 's'
+        ds.Tp_Y95.attrs['standard_name'] = 'sea_surface_primary_swell_wave_period_at_variance_spectral_density_maximum'
+        ds.Tp_Y95.attrs['long_name'] = 'peak wave period following Young (1995, Ocean Eng.)'
+        ds.Dp_ind.attrs['units'] = 'angular_degree' 
+        ds.Dp_ind.attrs['standard_name'] = 'sea_surface_wave_from_direction_at_variance_spectral_density_maximum'
+        ds.Dp_ind.attrs['long_name'] = 'peak wave direction at maximum energy frequency'
+        ds.Dp_Y95.attrs['units'] = 'angular_degree' 
+        ds.Dp_Y95.attrs['standard_name'] = 'sea_surface_wave_from_direction_at_variance_spectral_density_maximum'
+        ds.Dp_Y95.attrs['long_name'] = 'peak wave direction at Tp_Y95 frequency'
+        ds.nu_LH57.attrs['units'] = 'dimensionless' 
+        ds.nu_LH57.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density_bandwidth'
+        ds.nu_LH57.attrs['long_name'] = 'spectral bandwidth following Longuet-Higgins (1957)'
+        # Fill values
+        ds.Hm0.attrs['missing_value'] = fillvalue
+        ds.Te.attrs['missing_value'] = fillvalue
+        ds.Tp_ind.attrs['missing_value'] = fillvalue
+        ds.Tp_Y95.attrs['missing_value'] = fillvalue
+        ds.Dp_Y95.attrs['missing_value'] = fillvalue
+        ds.Dp_ind.attrs['missing_value'] = fillvalue
+        ds.nu_LH57.attrs['missing_value'] = fillvalue
+
+       # Global attributes
+        ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
+                             'Signature1000 {} wave spectra'.format(self.mid))
+        ds.attrs['summary'] =  "Nearshore wave spectra from ADCP measurements."
+        ds.attrs['instrument'] = 'Nortek Signature 1000'
+        ds.attrs['mooring_ID'] = self.mid
+        ds.attrs['segment_length'] = '1200 seconds'
+        # Read more attributes from mooring info file if provided
+        if self.dfm is not None:
+            comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
+            ds.attrs['comment'] = comments
+            config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
+            ds.attrs['configurations'] = config
+        ds.attrs['Conventions'] = 'CF-1.8'
+        ds.attrs['featureType'] = "timeSeries"
+        ds.attrs['source'] =  "Sub-surface observation"
+        ds.attrs['date_created'] = str(DT.utcnow()) + ' UTC'
+        ds.attrs['references'] = 'https://github.com/mikapm/pyROXSI'
+        ds.attrs['creator_name'] = "Mika P. Malila"
+        ds.attrs['creator_email'] = "mikapm@unc.edu"
+        ds.attrs['institution'] = "University of North Carolina at Chapel Hill"
+
+        # Set encoding before saving
+        encoding = {'time': {'zlib': False, '_FillValue': None},
+                    'lat': {'zlib': False, '_FillValue': None},
+                    'lon': {'zlib': False, '_FillValue': None},
+                    'Euu': {'_FillValue': fillvalue},        
+                    'Evv': {'_FillValue': fillvalue},        
+                    'Ezz': {'_FillValue': fillvalue},        
+                    'a1': {'_FillValue': fillvalue},        
+                    'a2': {'_FillValue': fillvalue},        
+                    'b1': {'_FillValue': fillvalue},        
+                    'b2': {'_FillValue': fillvalue},        
+                    'dspr': {'_FillValue': fillvalue},        
+                    'Hm0': {'_FillValue': fillvalue},        
+                    'Te': {'_FillValue': fillvalue},
+                    'Tp_ind': {'_FillValue': fillvalue},
+                    'Tp_Y95': {'_FillValue': fillvalue},
+                    'Dp_ind': {'_FillValue': fillvalue},
+                    'Dp_Y95': {'_FillValue': fillvalue},
+                    'nu_LH57': {'_FillValue': fillvalue},
+                   }     
+
+        # Save dataset in netcdf format
+        print('Saving netcdf ...')
+        ds.to_netcdf(fn, encoding=encoding)
+
 
 
 
