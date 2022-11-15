@@ -784,8 +784,8 @@ if __name__ == '__main__':
     rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
     fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
 
-    # Read atmospheric pressure time series
-    # NB! Nortek pressure is already hydrostatic pressure
+    # Read atmospheric pressure time series and calculate
+    # atmospheric pressure anomaly
     fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
     if not os.path.isfile(fn_patm):
         # csv file does not exist -> read mat file and generate dataframe
@@ -800,7 +800,8 @@ if __name__ == '__main__':
         # convert from mbar to hpa
         dfa['hpa'] /= 100
         dfa['hpa'] -= 0.032 # Empirical correction factor
-
+        # Calculate anomaly from mean
+        dfa['hpa_anom'] = dfa['hpa'] - dfa['hpa'].mean()
         # Save as csv
         dfa.to_csv(fn_patm)
     else:
@@ -824,7 +825,7 @@ if __name__ == '__main__':
             continue
         # Initialize ADV class and read raw data
         adv = ADV(datadir=args.dr, mooring_id=mid, magdec=args.magdec,
-                  mooring_info=fn_minfo, outdir=outdir, patm=None)
+                  mooring_info=fn_minfo, outdir=outdir, patm=dfa)
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data 
