@@ -59,7 +59,7 @@ class ADCP():
     Main ADCP data class.
     """
     def __init__(self, datadir, ser, zp=0.08, fs=4, burstlen=1200, 
-                 magdec=12.86, outdir=None, mooring_info=None, 
+                 magdec=12.86, beam_ang=25, outdir=None, mooring_info=None, 
                  patm=None, instr='NortekSignature1000'):
         """
         Initialize ADCP class.
@@ -70,7 +70,7 @@ class ADCP():
             zp - scalar; height of sensor above seabed (m)
             fs - scalar; sampling frequency (Hz)
             magdec - scalar; magnetic declination (deg E) of location
-            burstlen - scalar; burst length (sec)
+            beam_ang - scalar; beam angle in degrees (25 for Sig1000)
             outdir - str; if None, save output files in self.datadir,
                      else, specify outdir
             mooring_info - str; path to mooring info excel file (optional)
@@ -85,7 +85,7 @@ class ADCP():
         self.fs = fs
         self.dt = 1 / self.fs # Sampling rate (sec)
         self.magdec = magdec
-        self.burstlen = burstlen
+        self.beam_ang = beam_ang
         self.instr = instr
         if outdir is None:
             # Use datadir as outdir
@@ -146,6 +146,33 @@ class ADCP():
         time_arr = time_arr.dt.to_pydatetime()
 
         return time_mat, time_arr
+
+    def contamination_range(self, ha, binsz):
+        """
+        Calculate range of velocity contamination due to sidelobe 
+        reflections following Lentz et al. (2021, Jtech): 
+        DOI: 10.1175/JTECH-D-21-0075.1
+
+        According to L21 (Eq. 2), the range cells contaminated by 
+        sidelobe reflections are given by
+            
+            z_ic < h_a * (1 - cos(theta)) + 3*dz/2,
+        
+        where z_ic is depth below the surface of the contaminated region
+        (range cell centers), h_a is the distance from the ADCP acoustic 
+        head to the surface, theta is the ADCP beam angle from the 
+        vertical (25 for Sig1000) and dz is the bin size in meters. 
+
+        Parameters:
+            ha - distance from ADCP acoustic head to sea surface
+            binsz - binsize in meters
+            (beam angle is saved in self.beam_ang)
+
+        Returns:
+            zic - depth below the surface of the contaminated region
+        """
+        zic = ha * (1 - np.cos(self.beam_ang)) + 3 * binsz / 2
+        return zic
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
@@ -1030,6 +1057,26 @@ if __name__ == '__main__':
         dfa.to_csv(fn_patm)
     else:
         dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
+
+    # Plot all HPR timeseries first
+    for ser in sers:
+        print('Serial number: ', ser)
+        # Define input datadir
+        datadir = os.path.join(args.dr, 'raw', ser)
+        # Define Level1 output directories
+        outdir = os.path.join(args.dr, 'Level1', ser)
+        if not os.path.isdir(outdir):
+            print('Making output dir. {}'.format(outdir))
+            os.mkdir(outdir)
+        figdir = os.path.join(outdir, 'img')
+        if not os.path.isdir(figdir):
+            print('Making output figure dir. {}'.format(figdir))
+            os.mkdir(figdir)
+        # Initialize class
+        adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo)
+        # Loop over raw .mat files and get HPR
+        for i,fn_mat in enumerate(adcp.fns[50:52]):
+            times_mat, times = adcp.read_mat_times(fn_mat=fn_mat)
 
     # Iterate through serial numbers and read + preprocess data
     for ser in sers:
