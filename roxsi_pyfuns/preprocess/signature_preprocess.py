@@ -18,6 +18,7 @@ from tqdm import tqdm
 from datetime import datetime as DT
 from cftime import date2num, num2date
 from astropy.stats import mad_std
+from PyPDF2 import PdfFileMerger, PdfFileReader
 from roxsi_pyfuns import despike as rpd
 from roxsi_pyfuns import transfer_functions as rptf
 from roxsi_pyfuns import wave_spectra as rpws
@@ -59,8 +60,9 @@ class ADCP():
     Main ADCP data class.
     """
     def __init__(self, datadir, ser, zp=0.08, fs=4, burstlen=1200, 
-                 magdec=12.86, beam_ang=25, outdir=None, mooring_info=None, 
-                 patm=None, instr='NortekSignature1000'):
+                 magdec=12.86, beam_ang=25, binsz=0.5, outdir=None, 
+                 mooring_info=None, patm=None, 
+                 instr='NortekSignature1000'):
         """
         Initialize ADCP class.
 
@@ -71,6 +73,7 @@ class ADCP():
             fs - scalar; sampling frequency (Hz)
             magdec - scalar; magnetic declination (deg E) of location
             beam_ang - scalar; beam angle in degrees (25 for Sig1000)
+            binsz - scalar; velocity bin size in meters
             outdir - str; if None, save output files in self.datadir,
                      else, specify outdir
             mooring_info - str; path to mooring info excel file (optional)
@@ -86,6 +89,7 @@ class ADCP():
         self.dt = 1 / self.fs # Sampling rate (sec)
         self.magdec = magdec
         self.beam_ang = beam_ang
+        self.binsz = binsz
         self.instr = instr
         if outdir is None:
             # Use datadir as outdir
@@ -100,9 +104,18 @@ class ADCP():
             # Get mooring ID
             key = 'mooring_ID'
             self.mid = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
+            key = 'mooring_ID_long'
+            self.midl = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
+            # Get record start and end timestamps
+            key = 'record_start'
+            self.t0 = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
+            key = 'record_end'
+            self.t1 = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
         else:
             self.dfm = None # No mooring info dataframe
             self.mid = None # No mooring ID number
+            self.t0 = None # No start time given
+            self.t1 = None # No end time given
         # Atmospheric pressure time series, if provided
         self.patm = patm
 
@@ -176,8 +189,7 @@ class ADCP():
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
-                     despike_vel=True, despike_ast=True, save_nc=True,
-                    ):
+                     despike_vel=True, despike_ast=True, only_hpr=False):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
         data into xr.Dataset.
@@ -194,7 +206,8 @@ class ADCP():
                           Tracking (AST) data using Gaussian Process
                           method of Malila et al. (2022) in 20-minute
                           segments.
-            save_nc - bool; if True, saves output dataset to netcdf
+            only_hpr - bool; if True, output only pd.Dataframe of heading,
+                       pitch and roll.
         
         Returns:
             ds - xarray.Dataset with data read from input .mat file
@@ -218,6 +231,23 @@ class ADCP():
         time_vals = date2num(time_arr, time_units, 
                              calendar='standard', 
                              has_year_zero=True)
+
+        # Read heading, pitch & roll timeseries
+        heading = mat['Data']['Burst_Heading'].item().squeeze()
+        pitch = mat['Data']['Burst_Pitch'].item().squeeze()
+        roll = mat['Data']['Burst_Roll'].item().squeeze()
+
+        # If requesting only H,D,R timeseries, return dataframe
+        if only_hpr:
+            pres = mat['Data']['Burst_Pressure'].item().squeeze()
+            df_hpr = pd.DataFrame(data={'heading_ang':heading, 
+                                        'pitch_ang':pitch, 
+                                        'roll_ang':roll, 
+                                        'pressure':pres,
+                                        },
+                                  index=time_arr,
+                                  )
+            return df_hpr
 
         # Velocities from beams 1-4
         vb1 = mat['Data']['Burst_VelBeam1'].item().squeeze()
@@ -257,6 +287,10 @@ class ADCP():
         trans_hab = 31.88 / 100 # [m]
         # Cell size in meters
         binsz = mat['Config']['Burst_CellSize'].item().squeeze()
+        # Check that bin size is consistent with self.binsz
+        assert float(self.binsz) == binsz, \
+            "Given sampling rate fs={} is not consistent with value in .hdr file".format(
+                self.binsz)
         # Height of the first cell center relative to transducer
         # (based on the Principles of Operation manual by Nortek, page 12)
         bl_dist = mat['Config']['Burst_BlankingDistance'].item().squeeze()
@@ -296,7 +330,7 @@ class ADCP():
             # Count number of full 20-minute (1200-sec) segments
             t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
             t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
-            nseg = np.floor((t1s - t0s).total_seconds() / 1200)
+            nseg = np.round((t1s - t0s).total_seconds() / 1200)
             # Iterate over approx. 20-min long segments
             for sn, seg in enumerate(np.array_split(dai.to_series(), nseg)):
                 # Get segment start and end times
@@ -326,7 +360,7 @@ class ADCP():
                                         }, 
                                     index=time_arr)
                 nseg = (dfe.index[-1] - dfe.index[0]).total_seconds() / 1200
-                for sn, seg in enumerate(np.array_split(dfe['raw'], np.floor(nseg))):
+                for sn, seg in enumerate(np.array_split(dfe['raw'], np.round(nseg))):
                     # Get segment start and end times
                     t0ss = seg.index[0]
                     t1ss = seg.index[-1]
@@ -395,11 +429,6 @@ class ADCP():
 
         # Also read temperature
         temp = mat['Data']['Burst_Temperature'].item().squeeze()
-
-        # Read heading, pitch & roll timeseries
-        heading = mat['Data']['Burst_Heading'].item().squeeze()
-        pitch = mat['Data']['Burst_Pitch'].item().squeeze()
-        roll = mat['Data']['Burst_Roll'].item().squeeze()
 
         # Define variable dictionary for output dataset
         data_vars={'vB1': (['time', 'range'], vb1), # Beam coord. vel.
@@ -709,12 +738,17 @@ class ADCP():
         return pw
 
         
-    def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200):
+    def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200, 
+                 fmin=0.05, fmax=0.33):
         """
         Estimate wave spectra from ADCP data in the input dataset ds.
         Uses the despiked N&E velocities and AST surface elevation
         timeseries by default. Returns new dataset with spectra and
         some bulk parameters.
+
+        Horizontal velocities are taken from the first range bin
+        below the region of contamination due to sidelobe reflections
+        following the definition of Lentz et al. (2021, Jtech). 
 
         Parameters:
             ds - input xr.Dataset. Must include variables for u,v,z
@@ -722,40 +756,62 @@ class ADCP():
             v - str; key for desired v variable in ds
             z - str; key for desired z variable in ds
             seglen - scalar; spectral segment length in seconds 
+            fmin - scalar; min. frequency for computing bulk params
+            fmax - scalar; max. frequency for computing bulk params
 
         Returns:
             dss_concat - combined dataset of spectral segments
         """
-        # Interpolate E&N velocities and AST data
-        vEd = ds[u].interpolate_na(dim='time',
-            fill_value="extrapolate").isel(range=1).values
-        zEd = pd.Series(zEd, index=ds.time.values)
-        vNd = ds[v].interpolate_na(dim='time',
-            fill_value="extrapolate").isel(range=1).values
-        zNd = pd.Series(zNd, index=ds.time.values)
-        zA = ds[z].interpolate_na(dim='time',
-            fill_value="extrapolate").values
+        # Interpolate over possible dropouts in AST signal
+        zA = ds[z].interpolate_na(dim='time', fill_value="extrapolate").values
         zA = pd.Series(zA, index=ds.time.values)
+
+
         # Count number of full 20-minute (1200-sec) segments
         t0s = pd.Timestamp(zA.index[0]) # Start timestamp
         t1s = pd.Timestamp(zA.index[-1]) # End timestamp
-        nseg = np.round((t1s - t0s).total_seconds() / 1200)
+        nseg = np.round((t1s - t0s).total_seconds() / seglen)
         print('Estimating spectra ...')
         dss_list = [] # Empty list for concatenating
         for sn, seg in enumerate(np.array_split(zA, nseg)):
             # Get segment start and end times
             t0ss = seg.index[0]
-            print('seg start: {}'.format(t0ss))
-            print('seg start (round): {}'.format(
-                pd.Timestamp(t0ss).round('1H')))
+#            print('seg start: {}'.format(t0ss))
+#            print('seg start (round): {}'.format(
+#                 pd.Timestamp(t0ss).round('20T')))
+#             print(' ')
             t1ss = seg.index[-1]
+            # Take time slice from dataset
+            ds_seg = ds.sel(time=slice(t0ss, t1ss))
+            # Estimate depth from surface of contamination region
+            zic = self.contamination_range(binsz=self.binsz, ha=seg.min())
+            # Get optimal velocity range bin number following Lentz et al. (2021)
+            # Use 'bfill' to be conservative (round up)
+            z_opt = seg.min() - ds_seg.sel(range=zic,
+                                           method='bfill').range.item()
+            # Save range cell value
+            range_val = ds_seg.sel(range=z_opt,
+                                   method='nearest').range.item() 
+            # Interpolate E&N velocities
+            vEd = ds_seg[u].interpolate_na(dim='time',
+                fill_value="extrapolate").sel(range=z_opt, 
+                                              method='nearest').values
+            vEd = pd.Series(vEd, index=seg.index)
+            vNd = ds_seg[v].interpolate_na(dim='time',
+                fill_value="extrapolate").sel(range=z_opt, 
+                                              method='nearest').values
+            vNd = pd.Series(vNd, index=seg.index)
             # Estimate spectra from 20-min. segments
-            dss = rpws.spec_uvz(z=zA.loc[t0ss:t1ss], 
-                                u=vEd.loc[t0ss:t1ss], 
-                                v=vNd.loc[t0ss:t1ss], 
+            dss = rpws.spec_uvz(z=seg, 
+                                u=vEd, 
+                                v=vNd, 
                                 fs=adcp.fs,
-                                timestamp=pd.Timestamp(t0ss).round('1H'),
+                                timestamp=pd.Timestamp(t0ss).round('20T'),
+                                fmin=fmin,
+                                fmax=fmax,
                                 )
+            # Add range value to output dataset
+            dss['vel_binh'] = (['time'], np.atleast_1d(range_val))
             # Append to list
             dss_list.append(dss)
         # Concatenate all spectrum datasets into one
@@ -764,10 +820,10 @@ class ADCP():
         return dss_concat
 
 
-    def save_spec_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
+    def save_vel_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
                      ref_date=pd.Timestamp('2022-06-25'), ):
         """
-        Save wave spectrum dataset ds to netcdf format.
+        Save velocity/AST/pressure dataset ds to netcdf format.
 
         Parameters:
             ds - input spectral xr.Dataset
@@ -777,7 +833,7 @@ class ADCP():
             ref_date - reference date to use for time axis
         """
         # Check if file already exists
-        if os.path.isfile(self.fn_nc) and not overwrite:
+        if os.path.isfile(fn) and not overwrite:
             # Read and return existing dataset
             print('Requested netCDF file already exists. Set overwrite=True to overwrite.')
             return 
@@ -785,40 +841,17 @@ class ADCP():
         ds = ds.fillna(fillvalue)
         # Convert time array to numerical format
         time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
-        time_vals = date2num(ds.time.values, time_units, calendar='standard', 
+        time = pd.to_datetime(ds.time.values).to_pydatetime()
+        time_vals = date2num(time, 
+                             time_units, calendar='standard', 
                              has_year_zero=True)
-        ds.coords['time'] = time_vals
+        ds.coords['time'] = time_vals.astype(float)
         # Make lon, lat coordinates
-        ds = ds.assign_coords(lon=[36.6250768146788])
-        ds = ds.assign_coords(lat=[-121.94334673203694])
+        lon = self.dfm[self.dfm['mooring_ID_long']==self.midl]['longitude'].item()
+        ds = ds.assign_coords(lon=[lon])
+        lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
+        ds = ds.assign_coords(lat=[lat])
         # Set variable attributes for output netcdf file
-        ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
-        ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum from AST'
-        ds.Ezz.units = 'm^2/Hz'
-        ds.Evv.units = 'm^2/Hz'
-        ds.Evv.attrs['standard_name'] = 'northward_sea_water_velocity_variance_spectral_density'
-        ds.Evv.attrs['long_name'] = 'auto displacement spectrum from northward velocity component'
-        ds.Euu.units = 'm^2/Hz'
-        ds.Euu.attrs['standard_name'] = 'eastward_sea_water_velocity_variance_spectral_density'
-        ds.Euu.attrs['long_name'] = 'auto displacement spectrum from eastward velocity component'
-        ds.a1.attrs['units'] = 'dimensionless'
-        ds.a1.attrs['standard_name'] = 'a1_directional_fourier_component'
-        ds.a1.attrs['long_name'] = 'a1 following Kuik et al. (1988) and Herbers et al. (2012)'
-        ds.a2.attrs['units'] = 'dimensionless'
-        ds.a2.attrs['standard_name'] = 'a2_directional_fourier_component'
-        ds.a2.attrs['long_name'] = 'a2 following Kuik et al. (1988) and Herbers et al. (2012)'
-        ds.b1.attrs['units'] = 'dimensionless'
-        ds.b1.attrs['standard_name'] = 'b1_directional_fourier_component'
-        ds.b1.attrs['long_name'] = 'b1 following Kuik et al. (1988) and Herbers et al. (2012)'
-        ds.b2.attrs['units'] = 'dimensionless'
-        ds.b2.attrs['standard_name'] = 'b2_directional_fourier_component'
-        ds.b2.attrs['long_name'] = 'b2 following Kuik et al. (1988) and Herbers et al. (2012)'
-        ds.dspr.attrs['units'] = 'angular_degree'
-        ds.dspr.attrs['standard_name'] = 'sea_surface_wind_wave_directional_spread'
-        ds.dspr.attrs['long_name'] = 'directional spread as a function of frequency'
-        ds.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
-        ds.freq.attrs['long_name'] = 'spectral frequencies Hz'
-        ds.freq.units = 'Hz'
         ds.lat.attrs['standard_name'] = 'latitude'
         ds.lat.attrs['long_name'] = 'Approximate latitude of small-scale array rock summit'
         ds.lat.attrs['units'] = 'degrees_north'
@@ -834,6 +867,9 @@ class ADCP():
         ds.time.attrs['standard_name'] = 'time'
         ds.time.attrs['long_name'] = 'Local time (PDT) of spectral segment start'
         # Sig. wave height and other integrated parameters
+        ds.vel_binh.attrs['units'] = 'm'
+        ds.vel_binh.attrs['standard_name'] = 'height'
+        ds.vel_binh.attrs['long_name'] = 'horizontal velocity bin center height above seabed'
         ds.Hm0.attrs['units'] = 'm'
         ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
         ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
@@ -856,6 +892,7 @@ class ADCP():
         ds.nu_LH57.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density_bandwidth'
         ds.nu_LH57.attrs['long_name'] = 'spectral bandwidth following Longuet-Higgins (1957)'
         # Fill values
+        ds.vel_binh.attrs['missing_value'] = fillvalue
         ds.Hm0.attrs['missing_value'] = fillvalue
         ds.Te.attrs['missing_value'] = fillvalue
         ds.Tp_ind.attrs['missing_value'] = fillvalue
@@ -867,9 +904,23 @@ class ADCP():
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
                              'Signature1000 {} wave spectra'.format(self.mid))
-        ds.attrs['summary'] =  "Nearshore wave spectra from ADCP measurements."
+        if z_var == 'ASTd':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the despiked ADCP ' + 
+                                    'acoustic surface track (AST) signal, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        elif z_var == 'eta_lin':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the linear sea-surface ' + 
+                                    'reconstruction from pressure, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
+        ds.attrs['serial_number'] = self.ser
         ds.attrs['segment_length'] = '1200 seconds'
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
@@ -888,6 +939,7 @@ class ADCP():
 
         # Set encoding before saving
         encoding = {'time': {'zlib': False, '_FillValue': None},
+                    'freq': {'zlib': False, '_FillValue': None},
                     'lat': {'zlib': False, '_FillValue': None},
                     'lon': {'zlib': False, '_FillValue': None},
                     'Euu': {'_FillValue': fillvalue},        
@@ -898,6 +950,184 @@ class ADCP():
                     'b1': {'_FillValue': fillvalue},        
                     'b2': {'_FillValue': fillvalue},        
                     'dspr': {'_FillValue': fillvalue},        
+                    'vel_binh': {'_FillValue': fillvalue},        
+                    'Hm0': {'_FillValue': fillvalue},        
+                    'Te': {'_FillValue': fillvalue},
+                    'Tp_ind': {'_FillValue': fillvalue},
+                    'Tp_Y95': {'_FillValue': fillvalue},
+                    'Dp_ind': {'_FillValue': fillvalue},
+                    'Dp_Y95': {'_FillValue': fillvalue},
+                    'nu_LH57': {'_FillValue': fillvalue},
+                   }     
+
+        # Save dataset in netcdf format
+        print('Saving netcdf ...')
+        ds.to_netcdf(fn, encoding=encoding)
+
+
+
+    def save_spec_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
+                     ref_date=pd.Timestamp('2022-06-25'), z_var='ASTd'):
+        """
+        Save wave spectrum dataset ds to netcdf format.
+
+        Parameters:
+            ds - input spectral xr.Dataset
+            fn - str; path for netcdf filename
+            overwrite - bool; if False, does not overwrite existing file
+            fillvalue - scalar; fill value to denote missing values
+            ref_date - reference date to use for time axis
+            z_var - str; heave variable to use (ex. ASTd or eta_lin)
+        """
+        # Check if file already exists
+        if os.path.isfile(fn) and not overwrite:
+            # Read and return existing dataset
+            print('Requested netCDF file already exists. Set overwrite=True to overwrite.')
+            return 
+        # Set requested fill value
+        ds = ds.fillna(fillvalue)
+        # Convert time array to numerical format
+        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
+        time = pd.to_datetime(ds.time.values).to_pydatetime()
+        time_vals = date2num(time, 
+                             time_units, calendar='standard', 
+                             has_year_zero=True)
+        ds.coords['time'] = time_vals.astype(float)
+        # Make lon, lat coordinates
+        ds = ds.assign_coords(lon=[36.6250768146788])
+        ds = ds.assign_coords(lat=[-121.94334673203694])
+        # Set variable attributes for output netcdf file
+        ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
+        if z_var == 'ASTd':
+            z_str = 'AST'
+        elif z_var == 'eta_lin':
+            z_str = 'linear pressure reconstruction'
+        ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum from {}'.format(
+            z_str)
+        ds.Ezz.attrs['units'] = 'm^2/Hz'
+        ds.Evv.attrs['units'] = 'm^2/Hz'
+        ds.Evv.attrs['standard_name'] = 'northward_sea_water_velocity_variance_spectral_density'
+        ds.Evv.attrs['long_name'] = 'auto displacement spectrum from northward velocity component'
+        ds.Euu.attrs['units'] = 'm^2/Hz'
+        ds.Euu.attrs['standard_name'] = 'eastward_sea_water_velocity_variance_spectral_density'
+        ds.Euu.attrs['long_name'] = 'auto displacement spectrum from eastward velocity component'
+        ds.a1.attrs['units'] = 'dimensionless'
+        ds.a1.attrs['standard_name'] = 'a1_directional_fourier_component'
+        ds.a1.attrs['long_name'] = 'a1 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.a2.attrs['units'] = 'dimensionless'
+        ds.a2.attrs['standard_name'] = 'a2_directional_fourier_component'
+        ds.a2.attrs['long_name'] = 'a2 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.b1.attrs['units'] = 'dimensionless'
+        ds.b1.attrs['standard_name'] = 'b1_directional_fourier_component'
+        ds.b1.attrs['long_name'] = 'b1 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.b2.attrs['units'] = 'dimensionless'
+        ds.b2.attrs['standard_name'] = 'b2_directional_fourier_component'
+        ds.b2.attrs['long_name'] = 'b2 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.dspr.attrs['units'] = 'angular_degree'
+        ds.dspr.attrs['standard_name'] = 'sea_surface_wind_wave_directional_spread'
+        ds.dspr.attrs['long_name'] = 'directional spread as a function of frequency'
+        ds.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
+        ds.freq.attrs['long_name'] = 'spectral frequencies in Hz'
+        ds.freq.attrs['units'] = 'Hz'
+        ds.lat.attrs['standard_name'] = 'latitude'
+        ds.lat.attrs['long_name'] = 'Approximate latitude of small-scale array rock summit'
+        ds.lat.attrs['units'] = 'degrees_north'
+        ds.lat.attrs['valid_min'] = -90.0
+        ds.lat.attrs['valid_max'] = 90.0
+        ds.lon.attrs['standard_name'] = 'longitude'
+        ds.lon.attrs['long_name'] = 'Approximate longitude of small-scale array rock summit'
+        ds.lon.attrs['units'] = 'degrees_east'
+        ds.lon.attrs['valid_min'] = -180.0
+        ds.lon.attrs['valid_max'] = 180.0
+        ds.time.encoding['units'] = time_units
+        ds.time.attrs['units'] = time_units
+        ds.time.attrs['standard_name'] = 'time'
+        ds.time.attrs['long_name'] = 'Local time (PDT) of spectral segment start'
+        # Sig. wave height and other integrated parameters
+        ds.vel_binh.attrs['units'] = 'm'
+        ds.vel_binh.attrs['standard_name'] = 'height'
+        ds.vel_binh.attrs['long_name'] = 'horizontal velocity bin center height above seabed'
+        ds.Hm0.attrs['units'] = 'm'
+        ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
+        ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
+        ds.Te.attrs['units'] = 's'
+        ds.Te.attrs['standard_name'] = 'sea_surface_wave_energy_period'
+        ds.Te.attrs['long_name'] = 'energy-weighted wave period'
+        ds.Tp_ind.attrs['units'] = 's'
+        ds.Tp_ind.attrs['standard_name'] = 'sea_surface_primary_swell_wave_period_at_variance_spectral_density_maximum'
+        ds.Tp_ind.attrs['long_name'] = 'wave period at maximum spectral energy'
+        ds.Tp_Y95.attrs['units'] = 's'
+        ds.Tp_Y95.attrs['standard_name'] = 'sea_surface_primary_swell_wave_period_at_variance_spectral_density_maximum'
+        ds.Tp_Y95.attrs['long_name'] = 'peak wave period following Young (1995, Ocean Eng.)'
+        ds.Dp_ind.attrs['units'] = 'angular_degree' 
+        ds.Dp_ind.attrs['standard_name'] = 'sea_surface_wave_from_direction_at_variance_spectral_density_maximum'
+        ds.Dp_ind.attrs['long_name'] = 'peak wave direction at maximum energy frequency'
+        ds.Dp_Y95.attrs['units'] = 'angular_degree' 
+        ds.Dp_Y95.attrs['standard_name'] = 'sea_surface_wave_from_direction_at_variance_spectral_density_maximum'
+        ds.Dp_Y95.attrs['long_name'] = 'peak wave direction at Tp_Y95 frequency'
+        ds.nu_LH57.attrs['units'] = 'dimensionless' 
+        ds.nu_LH57.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density_bandwidth'
+        ds.nu_LH57.attrs['long_name'] = 'spectral bandwidth following Longuet-Higgins (1957)'
+        # Fill values
+        ds.vel_binh.attrs['missing_value'] = fillvalue
+        ds.Hm0.attrs['missing_value'] = fillvalue
+        ds.Te.attrs['missing_value'] = fillvalue
+        ds.Tp_ind.attrs['missing_value'] = fillvalue
+        ds.Tp_Y95.attrs['missing_value'] = fillvalue
+        ds.Dp_Y95.attrs['missing_value'] = fillvalue
+        ds.Dp_ind.attrs['missing_value'] = fillvalue
+        ds.nu_LH57.attrs['missing_value'] = fillvalue
+
+       # Global attributes
+        ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
+                             'Signature1000 {} wave spectra'.format(self.mid))
+        if z_var == 'ASTd':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the despiked ADCP ' + 
+                                    'acoustic surface track (AST) signal, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        elif z_var == 'eta_lin':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the linear sea-surface ' + 
+                                    'reconstruction from pressure, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        ds.attrs['instrument'] = 'Nortek Signature 1000'
+        ds.attrs['mooring_ID'] = self.mid
+        ds.attrs['serial_number'] = self.ser
+        ds.attrs['segment_length'] = '1200 seconds'
+        # Read more attributes from mooring info file if provided
+        if self.dfm is not None:
+            comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
+            ds.attrs['comment'] = comments
+            config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
+            ds.attrs['configurations'] = config
+        ds.attrs['Conventions'] = 'CF-1.8'
+        ds.attrs['featureType'] = "timeSeries"
+        ds.attrs['source'] =  "Sub-surface observation"
+        ds.attrs['date_created'] = str(DT.utcnow()) + ' UTC'
+        ds.attrs['references'] = 'https://github.com/mikapm/pyROXSI'
+        ds.attrs['creator_name'] = "Mika P. Malila"
+        ds.attrs['creator_email'] = "mikapm@unc.edu"
+        ds.attrs['institution'] = "University of North Carolina at Chapel Hill"
+
+        # Set encoding before saving
+        encoding = {'time': {'zlib': False, '_FillValue': None},
+                    'freq': {'zlib': False, '_FillValue': None},
+                    'lat': {'zlib': False, '_FillValue': None},
+                    'lon': {'zlib': False, '_FillValue': None},
+                    'Euu': {'_FillValue': fillvalue},        
+                    'Evv': {'_FillValue': fillvalue},        
+                    'Ezz': {'_FillValue': fillvalue},        
+                    'a1': {'_FillValue': fillvalue},        
+                    'a2': {'_FillValue': fillvalue},        
+                    'b1': {'_FillValue': fillvalue},        
+                    'b2': {'_FillValue': fillvalue},        
+                    'dspr': {'_FillValue': fillvalue},        
+                    'vel_binh': {'_FillValue': fillvalue},        
                     'Hm0': {'_FillValue': fillvalue},        
                     'Te': {'_FillValue': fillvalue},
                     'Tp_ind': {'_FillValue': fillvalue},
@@ -933,7 +1163,7 @@ if __name__ == '__main__':
         parser.add_argument("-ser", 
                 help=('Instrument serial number. To loop through all, select "ALL".'),
                 type=str,
-                choices=['103088', '103094', '103110', '103063', '103206'],
+                choices=['103088', '103094', '103110', '103063', '103206', 'ALL'],
                 default='103094',
                 )
         parser.add_argument("-M", 
@@ -978,7 +1208,8 @@ if __name__ == '__main__':
         from xr.Dataset.
 
         Parameters:
-            ds - xr.Dataset with pressure + heading, pitch & roll data
+            ds - xr.Dataset or pd.DataFrame with pressure + heading, 
+                 pitch & roll data
             fn - str; figure filename (full path). If None, only shows
                  the figure
             ser - str; (optional) instrument serial number (or other string)
@@ -994,7 +1225,10 @@ if __name__ == '__main__':
         # Plot horizontal dashed line at +/-25 deg
         axes[0].axhline(y=25, linestyle='--', color='k', alpha=0.6)
         axes[0].axhline(y=-25, linestyle='--', color='k', alpha=0.6)
-        datestr = str(pd.Timestamp(dsv.time[0].values).date())
+        if isinstance(ds, pd.DataFrame):
+            datestr = str(pd.Timestamp(ds.index[0]).date())
+        elif isinstance(ds, xr.Dataset):
+            datestr = str(pd.Timestamp(ds.time[0].values).date())
         if ser is not None:
             axes[0].set_title('Nortek Sig1000 {} {}'.format(ser, datestr))
         else:
@@ -1029,11 +1263,11 @@ if __name__ == '__main__':
         # Only process one serial number
         sers = [args.ser]
 
-    # UVZ spectra test
-    df = pd.read_csv('test_uvz.csv', parse_dates=['time']).set_index('time')
-    dss = rpws.spec_uvz(z=df['z'].values, u=df['u'].values, 
-        v=df['v'].values, fs=4, fmin=0.05, fmax=0.33, 
-        timestamp=pd.Timestamp(df.index[0].round('1H')))
+#     # UVZ spectra test
+#     df = pd.read_csv('test_uvz.csv', parse_dates=['time']).set_index('time')
+#     dss = rpws.spec_uvz(z=df['z'].values, u=df['u'].values, 
+#         v=df['v'].values, fs=4, fmin=0.05, fmax=0.33, 
+#         timestamp=pd.Timestamp(df.index[0].round('1H')))
 
     # Read atmospheric pressure time series and calculate
     # atmospheric pressure anomaly
@@ -1060,7 +1294,7 @@ if __name__ == '__main__':
 
     # Plot all HPR timeseries first
     for ser in sers:
-        print('Serial number: ', ser)
+        print('Serial number (HPR): ', ser)
         # Define input datadir
         datadir = os.path.join(args.dr, 'raw', ser)
         # Define Level1 output directories
@@ -1075,8 +1309,36 @@ if __name__ == '__main__':
         # Initialize class
         adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo)
         # Loop over raw .mat files and get HPR
-        for i,fn_mat in enumerate(adcp.fns[50:52]):
-            times_mat, times = adcp.read_mat_times(fn_mat=fn_mat)
+        for i,fn_mat in tqdm(enumerate(adcp.fns)):
+            # Define figure filename
+            figdir_hpr = os.path.join(figdir, 'hpr')
+            if not os.path.isdir(figdir_hpr):
+                # Make figure dir.
+                os.mkdir(figdir_hpr)
+            fn_hpr = os.path.join(figdir_hpr, 'qc_hpr_{}_{:03d}.pdf'.format(
+                ser, i))
+            # Check if figure already exists
+            if os.path.isfile(fn_hpr):
+                continue
+            # Read heading, pitch & roll time series 
+            df_hpr = adcp.loaddata_vel(fn_mat, only_hpr=True)
+            # Plot
+            if not os.path.isfile(fn_hpr):
+                plot_hpr(df_hpr, fn=fn_hpr, ser=ser)
+
+    # Combine all individual HPR figures into one pdf
+    fn_all_hpr = os.path.join(figdir_hpr, 'all_sig_hpr_{}.pdf'.format(ser))
+    fns_pdf_hpr = sorted(glob.glob(os.path.join(figdir_hpr, 'qc_hpr*.pdf')))
+    if len(fns_pdf_hpr):
+        # Call the PdfFileMerger
+        mergedObject = PdfFileMerger()
+        # Loop through all pdf files and append their pages
+        for fn in fns_pdf_hpr:
+            mergedObject.append(PdfFileReader(fn, 'rb'))
+        # Write all the files into a file which is named as shown below
+        if not os.path.isfile(fn_all_hpr):
+            print('Merging HPR pdfs into one ...')
+            mergedObject.write(fn_all_hpr)
 
     # Iterate through serial numbers and read + preprocess data
     for ser in sers:
@@ -1098,11 +1360,16 @@ if __name__ == '__main__':
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
         # Loop over raw .mat files and save daily data as netcdf
-        for i,fn_mat in enumerate(adcp.fns[50:52]):
+        for i,fn_mat in enumerate(adcp.fns):
             # Check if daily netcdf files already exist
             times_mat, times = adcp.read_mat_times(fn_mat=fn_mat)
             date0 = str(times[0].date()) # Date of first timestamp
             date1 = str(times[-1].date()) # Date of last timestamp
+            # Check if date1 is before dataset starttime
+            if pd.Timestamp(times[-1]) < pd.Timestamp(adcp.t0):
+                print('.mat file endtime {} before dataset starttime {}'.format(
+                    pd.Timestamp(times[-1]), pd.Timestamp(adcp.t0)))
+                continue
             date0_str = ''.join(date0.split('-'))
             date1_str = ''.join(date1.split('-'))
             fn_nc0 = os.path.join(outdir, 
@@ -1111,7 +1378,7 @@ if __name__ == '__main__':
             fn_nc1 = os.path.join(outdir, 
                 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
                     adcp.mid, date1_str))
-            if not os.path.isfile(fn_nc0) or not os.path.isfile(fn_nc1):
+            if not os.path.isfile(fn_nc0) or date0 != date1:
                 # Read mat structure for velocities and 1D timeseries
                 dsv = adcp.loaddata_vel(fn_mat)
                 # Check if start and end dates the same
@@ -1129,20 +1396,38 @@ if __name__ == '__main__':
                     print('Concatenating daily datasets for {} ...'.format(
                         date0))
                     dsd = xr.concat(dsv_daily, dim='time')
+
+                    # Check if daily ds starttime is before dataset starttime
+                    if pd.Timestamp(dsd.time[0].values) < pd.Timestamp(adcp.t0):
+                        print('Cropping daily dataset to start from {}'.format(
+                            pd.Timestamp(adcp.t0)))
+                        dsd = dsd.sel(time=slice(adcp.t0, None))
+
                     if not os.path.isfile(fn_nc0):
                         print('Saving daily dataset for {} to netCDF ...'.format(
                             date0))
                         dsd.to_netcdf(fn_nc0)
+            
+                    # Estimate 20-min. wave spectra from AST
+                    fn_spec_ast = os.path.join(outdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ASTd_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_ast):
+                        print('Estimating daily spectra from AST ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='ASTd')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_ast, z_var='ASTd')
+                    
+                    # Also estimate 20-min. wave spectra from linear pressure reconstruction
+                    fn_spec_etal = os.path.join(outdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAl_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etal):
+                        print('Estimating daily spectra from eta_lin ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etal, z_var='eta_lin')
 
-                    # Estimate 20-min. wave spectra 
-                    dss_daily = adcp.wavespec(dsd, seglen=1200)
-                    # Save spectra to netCDF
-
-                    # Make daily QC plots
-                    fn_hpr = os.path.join(figdir, 'qc_hpr_{}_{}.pdf'.format(
-                        ser, date0_str))
-                    if not os.path.isfile(fn_hpr):
-                        plot_hpr(dsd, fn=fn_hpr, ser=ser)
                     # Make new empty list and append the following day
                     dsv_daily = []
                     dsv1 = dsv.sel(time=date1).copy()
@@ -1155,15 +1440,49 @@ if __name__ == '__main__':
                             date0))
                         dsd.to_netcdf(fn_nc0)
 
-                    # Estimate 20-min. wave spectra 
-                    dss_daily = adcp.wavespec(dsd, seglen=1200)
+                    # Estimate 20-min. wave spectra from AST
+                    fn_spec_ast = os.path.join(outdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ASTd_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_ast):
+                        print('Estimating daily spectra from AST ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='ASTd')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_ast, z_var='ASTd')
+                    
+                    # Also estimate 20-min. wave spectra from linear pressure reconstruction
+                    fn_spec_etal = os.path.join(outdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAl_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etal):
+                        print('Estimating daily spectra from eta_lin ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etal, z_var='eta_lin')
+            else:
+                # Read existing file(s)
+                dsd = xr.decode_cf(xr.open_dataset(fn_nc0, decode_coords='all'))
+                # Estimate 20-min. wave spectra from AST
+                fn_spec_ast = os.path.join(outdir, 
+                                        'Asilomar_SSA_L2_Sig_Spec_ASTd_{}_{}.nc'.format(
+                                            adcp.mid, date0_str))
+                if not os.path.isfile(fn_spec_ast):
+                    print('Estimating daily spectra from AST ...')
+                    dss_daily = adcp.wavespec(dsd, seglen=1200, z='ASTd')
                     # Save spectra to netCDF
+                    adcp.save_spec_nc(dss_daily, fn=fn_spec_ast, z_var='ASTd')
+                
+                # Also estimate 20-min. wave spectra from linear pressure reconstruction
+                fn_spec_etal = os.path.join(outdir, 
+                                        'Asilomar_SSA_L2_Sig_Spec_ETAl_{}_{}.nc'.format(
+                                            adcp.mid, date0_str))
+                if not os.path.isfile(fn_spec_etal):
+                    print('Estimating daily spectra from eta_lin ...')
+                    dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin')
+                    # Save spectra to netCDF
+                    adcp.save_spec_nc(dss_daily, fn=fn_spec_etal, z_var='eta_lin')
 
-                    # Make daily QC plots
-                    fn_hpr = os.path.join(figdir, 'qc_hpr_{}_{}.pdf'.format(
-                        ser, date0_str))
-                    if not os.path.isfile(fn_hpr):
-                        plot_hpr(dsd, fn=fn_hpr, ser=ser)
+
 
 
 
