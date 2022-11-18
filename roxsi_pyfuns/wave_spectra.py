@@ -412,7 +412,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     ds['Tp_Y95'].attrs['fmax'] = fmax
     ds['Dp_Y95'].attrs['fmin'] = fmin
     ds['Dp_Y95'].attrs['fmax'] = fmax
-    ds['nu_LH75'].attrs['fmin'] = fmin
-    ds['nu_LH75'].attrs['fmax'] = fmax
+    ds['nu_LH57'].attrs['fmin'] = fmin
+    ds['nu_LH57'].attrs['fmax'] = fmax
 
     return ds
