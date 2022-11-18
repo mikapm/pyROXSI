@@ -42,7 +42,7 @@ class ADV():
             instr - str; instrument name
         """
         self.datadir = datadir
-        self.mid = mooring_id
+        self.midl = mooring_id
         self.zp = zp
         self.fs = fs
         self.dt = 1 / self.fs # Sampling rate (sec)
@@ -62,6 +62,11 @@ class ADV():
         if mooring_info is not None:
             self.dfm = pd.read_excel(mooring_info, 
                                      parse_dates=['record_start', 'record_end'])
+            # Get mooring ID
+            key = 'mooring_ID'
+            self.mid = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
+            key = 'serial_number'
+            self.mid = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
         else:
             self.dfm = None
         # Atmospheric pressure time series, if provided
@@ -75,14 +80,14 @@ class ADV():
         data directory.
         """        
         # Find correct .dat file with data time series
-        self.fn_dat = os.path.join(self.datadir, '{}.dat'.format(self.mid))
+        self.fn_dat = os.path.join(self.datadir, '{}.dat'.format(self.midl))
         # Find correct .sen file with burst info
-        self.fn_sen = os.path.join(self.datadir, '{}.sen'.format(self.mid))
+        self.fn_sen = os.path.join(self.datadir, '{}.sen'.format(self.midl))
         # Find correct .sen file with Vector configuration info
-        self.fn_hdr = os.path.join(self.datadir, '{}.hdr'.format(self.mid))
+        self.fn_hdr = os.path.join(self.datadir, '{}.hdr'.format(self.midl))
         # Define standard netcdf output filename
         self.fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
-            self.mid))
+            self.midl))
 
 
     def _read_hdr(self):
@@ -462,9 +467,9 @@ class ADV():
         if crop and self.dfm is not None:
             print('Cropping time series ...')
             t0n = pd.Timestamp(
-                self.dfm[self.dfm['mooring_ID']==self.mid]['record_start'].item())
+                self.dfm[self.dfm['mooring_ID_long']==self.midl]['record_start'].item())
             t1n = pd.Timestamp(
-                self.dfm[self.dfm['mooring_ID']==self.mid]['record_end'].item())
+                self.dfm[self.dfm['mooring_ID_long']==self.midl]['record_end'].item())
             # Crop dataframe
             df = df.loc[t0n:t1n]
 
@@ -731,8 +736,8 @@ if __name__ == '__main__':
                 type=str,
                 default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Vectors',
                 )
-        parser.add_argument("-mid", 
-                help=('Mooring ID. To loop through all, select "ALL".'),
+        parser.add_argument("-midl", 
+                help=('Mooring ID (long). To loop through all, select "ALL".'),
                 type=str,
                 choices=['C1v01', 'C2VP02', 'C3VP02', 'C4VP02', 'C5V02', 
                          'C6v01', 'L1v01', 'L2VP02', 'L4VP02', 'L5v01', 'ALL'],
@@ -808,7 +813,7 @@ if __name__ == '__main__':
         dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
 
     # Check if processing just one mooring or all
-    if args.mid.lower() == 'all':
+    if args.midl.lower() == 'all':
         # Loop through all mooring IDs
         mids = ['C1v01', 'C2VP02', 'C3VP02', 'C4VP02', 'C5V02', 
                 'C6v01', 'L1v01', 'L2VP02', 'L4VP02', 'L5v01']
@@ -817,14 +822,14 @@ if __name__ == '__main__':
         mids = [args.mid]
 
     # Iterate over mooring ID(s)
-    for mid in tqdm(mids):
+    for midl in tqdm(mids):
         # Skip mooring ID C6v01 for now, suspicious data
-        if mid == 'C6v01':
+        if midl == 'C6v01':
             print('Not processing Mooring ID {} due to suspicious raw data.'.format(
-                mid))
+                midl))
             continue
         # Initialize ADV class and read raw data
-        adv = ADV(datadir=args.dr, mooring_id=mid, magdec=args.magdec,
+        adv = ADV(datadir=args.dr, mooring_id=midl, magdec=args.magdec,
                   mooring_info=fn_minfo, outdir=outdir, patm=dfa)
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
