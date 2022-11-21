@@ -5,6 +5,7 @@ dependencies:
   - python=3.9
   - ipython
   - pip
+  - ipympl
   - openpyxl
   - PyPDF2
   - jupyter
