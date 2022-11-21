@@ -21,6 +21,7 @@ from astropy.stats import mad_std
 from PyPDF2 import PdfFileMerger, PdfFileReader
 from roxsi_pyfuns import despike as rpd
 from roxsi_pyfuns import transfer_functions as rptf
+from roxsi_pyfuns import coordinate_transforms as rpct
 from roxsi_pyfuns import wave_spectra as rpws
 
 
@@ -269,16 +270,23 @@ class ADCP():
         dai5 = da5.interp(time=time_arr, method='cubic',
                           kwargs={"fill_value": "extrapolate"}
                          )
-        # E,N,U velocities
+        vb5 = dai5.values
+        # Calculate E,N,U velocities from beam velocities
+        # Note order and sign of beams!!!
+        beam_arr = np.array([-vb1, -vb3, -vb4, -vb2, -vb5])
+        print('beam_arr.shape: ', beam_arr.shape)
+        enu_vel = rpct.beam2enu(beam_arr, heading=heading, 
+                                pitch=pitch, roll=roll)
+
+        # Nortek E,N,U velocities
         vE = mat['Data']['Burst_VelEast'].item().squeeze()
         vN = mat['Data']['Burst_VelNorth'].item().squeeze()
         vU1 = mat['Data']['Burst_VelUp1'].item().squeeze()
         vU2 = mat['Data']['Burst_VelUp2'].item().squeeze()
-        # x,y,z velocities
-        vx = mat['Data']['Burst_VelX'].item().squeeze()
-        vy = mat['Data']['Burst_VelY'].item().squeeze()
-        vz1 = mat['Data']['Burst_VelZ1'].item().squeeze()
-        vz2 = mat['Data']['Burst_VelZ2'].item().squeeze()
+        print('vE.shape: ', vE.shape)
+        print('vE: ', vE[:20,0])
+        print('enu_vel.shape: ', enu_vel.shape)
+        print('vEc: ', enu_vel[0,:20,0])
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
@@ -344,82 +352,53 @@ class ADCP():
                 # Save despiked segment to correct indices in df_ast
                 df_ast['des'].loc[t0ss:t1ss] = seg_d
 
-        # Despike velocities?
+        # Despike (beam) velocities?
         if despike_vel:
-            print('Despiking velocities ...')
+            print('Despiking beam velocities ...')
             # Initialize arrays
-            vEd = np.ones_like(vE) * np.nan
-            vNd = np.ones_like(vN) * np.nan
-            vU1d = np.ones_like(vU1) * np.nan
-            vU2d = np.ones_like(vU2) * np.nan
-            # Despike each vertical cell at a time
-            for j, zr in tqdm(enumerate(zhab)):
-                # Despike in 20-min bursts
-                dfe = pd.DataFrame(data={'raw':vE[:,j].copy(),
-                                         'des':np.ones_like(vE[:,j])*np.nan,
-                                        }, 
-                                    index=time_arr)
-                nseg = (dfe.index[-1] - dfe.index[0]).total_seconds() / 1200
-                for sn, seg in enumerate(np.array_split(dfe['raw'], np.round(nseg))):
-                    # Get segment start and end times
-                    t0ss = seg.index[0]
-                    t1ss = seg.index[-1]
-                    # Only despike if range reading below min AST measurement
-                    if despike_ast:
-                        # Use despiked AST signal if available
-                        ast_min = df_ast['des'].loc[t0ss:t1ss].min()
-                    else:
-                        ast_min = df_ast['raw'].loc[t0ss:t1ss].min()
-                    # Subtract half of a binsize from ast_min (b/c
-                    # range values are in middles of bins)
-                    ast_min -= binsz / 2
-                    if zr < ast_min:
-                        dfe['des'].loc[t0ss:t1ss] = self.despike_GN02(
-                            seg.values.squeeze())
-                vEd[:,j] = dfe['des'].values
-                # North velocity for current range
-                dfn = pd.DataFrame(data={'raw':vN[:,j].copy(),
-                                         'des':np.ones_like(vN[:,j])*np.nan,
-                                        }, 
-                                    index=time_arr)
-                nseg = (dfn.index[-1] - dfn.index[0]).total_seconds() / 1200
-                # Split to nseg segments
-                for sn, seg in enumerate(np.array_split(dfn['raw'], np.floor(nseg))):
-                    t0ss = seg.index[0]
-                    t1ss = seg.index[-1]
-                    if zr < ast_min:
-                        # Bin range below min AST value -> despike
-                        dfn['des'].loc[t0ss:t1ss] = self.despike_GN02(
-                            seg.values.squeeze())
-                vNd[:,j] = dfn['des'].values            
-                # Up1 velocity
-                dfu1 = pd.DataFrame(data={'raw':vU1[:,j].copy(),
-                                          'des':np.ones_like(vU1[:,j])*np.nan,
-                                         }, 
-                                    index=time_arr)
-                nseg = (dfu1.index[-1] - dfu1.index[0]).total_seconds() / 1200
-                # Split to nseg segments
-                for sn, seg in enumerate(np.array_split(dfu1['raw'], np.floor(nseg))):
-                    t0ss = seg.index[0]
-                    t1ss = seg.index[-1]
-                    if zr < ast_min:
-                        dfu1['des'].loc[t0ss:t1ss] = self.despike_GN02(
-                            seg.values.squeeze())
-                vU1d[:,j] = dfu1['des'].values
-                # Up2 velocity
-                dfu2 = pd.DataFrame(data={'raw':vU2[:,j].copy(),
-                                          'des':np.ones_like(vU2[:,j])*np.nan,
-                                         }, 
-                                    index=time_arr)
-                nseg = (dfu2.index[-1] - dfu2.index[0]).total_seconds() / 1200
-                # Split to nseg segments
-                for sn, seg in enumerate(np.array_split(dfu2['raw'], np.floor(nseg))):
-                    t0ss = seg.index[0]
-                    t1ss = seg.index[-1]
-                    if zr < ast_min:
-                        dfu2['des'].loc[t0ss:t1ss] = self.despike_GN02(
-                            seg.values.squeeze())
-                vU2d[:,j] = dfu2['des'].values
+            vb1d = np.ones_like(vb1) * np.nan
+            vb2d = np.ones_like(vb2) * np.nan
+            vb3d = np.ones_like(vb3) * np.nan
+            vb4d = np.ones_like(vb4) * np.nan
+            vb5d = np.ones_like(vb5) * np.nan
+            # Save despiked velocities in dfb DataFrame
+            dfb = pd.DataFrame(data={'vb1d':vb1d, 'vb2d':vb2d, 'vb3d':vb3d,
+                                     'vb4d':vb4d, 'vb5d':vb5d},
+                               index=time_arr,
+                              )
+            # Despike each beam at a time
+            for col in dfb:
+                # Despike each vertical cell at a time
+                for j, zr in tqdm(enumerate(zhab)):
+                    # Despike in 20-min bursts
+                    dfi = pd.DataFrame(data={'raw':vb1[:,j].copy(),
+                                             'des':np.ones_like(vb1[:,j])*np.nan,
+                                            }, 
+                                        index=time_arr)
+                    # Number of 20-min segments
+                    nseg = (dfb.index[-1] - dfb.index[0]).total_seconds() / 1200
+                    # Iterate over segments and despike
+                    for sn, seg in enumerate(np.array_split(dfb['raw'], np.round(nseg))):
+                        # Get segment start and end times
+                        t0ss = seg.index[0]
+                        t1ss = seg.index[-1]
+                        # Only despike if range reading below min AST measurement
+                        if despike_ast:
+                            # Use despiked AST signal if available
+                            ast_min = df_ast['des'].loc[t0ss:t1ss].min()
+                        else:
+                            ast_min = df_ast['raw'].loc[t0ss:t1ss].min()
+                        # Subtract half of a binsize from ast_min (b/c
+                        # range values are in middles of bins)
+                        ast_min -= binsz / 2
+                        if zr < ast_min:
+                            dfi['des'].loc[t0ss:t1ss] = self.despike_GN02(
+                                seg.values.squeeze())
+                    # Save despiked segment in correct slice of dataframe
+                    dfb[col][:,j] = dfi['des'].values
+        
+        # Convert despiked beam velocities to E,N,U coordinates
+
 
         # Also read pressure and reconstruct linear sea-surface elevation
         pres = mat['Data']['Burst_Pressure'].item().squeeze()
@@ -441,11 +420,6 @@ class ADCP():
                    'vN': (['time', 'range'], vN),
                    'vU1': (['time', 'range'], vU1),
                    'vU2': (['time', 'range'], vU2),
-                   # x,y,z velocities
-                   'vX': (['time', 'range'], vx),
-                   'vY': (['time', 'range'], vy),
-                   'vZ1': (['time', 'range'], vz1),
-                   'vZ2': (['time', 'range'], vz2),
                    # Raw AST 
                    'ASTr': (['time'], df_ast['raw'].values),
                    # Pressure and reconstructed sea surface
@@ -464,11 +438,12 @@ class ADCP():
             # GP-despiked AST
             data_vars['ASTd'] = (['time'], df_ast['des'].values)
         if despike_vel:
-            # Despiked East, North, Up velocities
-            data_vars['vEd'] = (['time', 'range'], vEd)
-            data_vars['vNd'] = (['time', 'range'], vNd)
-            data_vars['vU1d'] = (['time', 'range'], vU1d)
-            data_vars['vU2d'] = (['time', 'range'], vU2d)
+            # Despiked beam velocities
+            data_vars['vb1d'] = (['time', 'range'], dfb['vb1d'].values)
+            data_vars['vb2d'] = (['time', 'range'], dfb['vb2d'].values)
+            data_vars['vb3d'] = (['time', 'range'], dfb['vb3d'].values)
+            data_vars['vb4d'] = (['time', 'range'], dfb['vb4d'].values)
+            data_vars['vb5d'] = (['time', 'range'], dfb['vb5d'].values)
 
         # Make output dataset and save to netcdf
         ds = xr.Dataset(data_vars=data_vars,
@@ -1370,6 +1345,7 @@ if __name__ == '__main__':
                 print('.mat file endtime {} before dataset starttime {}'.format(
                     pd.Timestamp(times[-1]), pd.Timestamp(adcp.t0)))
                 continue
+            print('mat: ', os.path.basename(fn_mat))
             date0_str = ''.join(date0.split('-'))
             date1_str = ''.join(date1.split('-'))
             fn_nc0 = os.path.join(outdir, 
