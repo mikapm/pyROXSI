@@ -275,18 +275,18 @@ class ADCP():
         # Note order and sign of beams!!!
         beam_arr = np.array([-vb1, -vb3, -vb4, -vb2, -vb5])
         print('beam_arr.shape: ', beam_arr.shape)
-        enu_vel = rpct.beam2enu(beam_arr, heading=heading, 
-                                pitch=pitch, roll=roll)
+#         enu_vel = rpct.beam2enu(beam_arr, heading=heading, 
+#                                 pitch=pitch, roll=roll)
 
         # Nortek E,N,U velocities
         vE = mat['Data']['Burst_VelEast'].item().squeeze()
         vN = mat['Data']['Burst_VelNorth'].item().squeeze()
         vU1 = mat['Data']['Burst_VelUp1'].item().squeeze()
         vU2 = mat['Data']['Burst_VelUp2'].item().squeeze()
-        print('vE.shape: ', vE.shape)
-        print('vE: ', vE[:20,0])
-        print('enu_vel.shape: ', enu_vel.shape)
-        print('vEc: ', enu_vel[0,:20,0])
+#         print('vE.shape: ', vE.shape)
+#         print('vE: ', vE[:20,0])
+#         print('enu_vel.shape: ', enu_vel.shape)
+#         print('vEc: ', enu_vel[0,:20,0])
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
@@ -356,29 +356,51 @@ class ADCP():
         if despike_vel:
             print('Despiking beam velocities ...')
             # Initialize arrays
-            vb1d = np.ones_like(vb1) * np.nan
-            vb2d = np.ones_like(vb2) * np.nan
-            vb3d = np.ones_like(vb3) * np.nan
-            vb4d = np.ones_like(vb4) * np.nan
-            vb5d = np.ones_like(vb5) * np.nan
+#             vb1d = np.ones_like(vb1) * np.nan
+#             vb2d = np.ones_like(vb2) * np.nan
+#             vb3d = np.ones_like(vb3) * np.nan
+#             vb4d = np.ones_like(vb4) * np.nan
+#             vb5d = np.ones_like(vb5) * np.nan
+#             # Save despiked velocities in dfb DataFrame
+#             dfb = pd.DataFrame(data={'vb1d':vb1d, 'vb2d':vb2d, 'vb3d':vb3d,
+#                                      'vb4d':vb4d, 'vb5d':vb5d},
+#                                index=time_arr,
+#                               )
+            # Initialize arrays
+            vEd = np.ones_like(vb1) * np.nan
+            vNd = np.ones_like(vb2) * np.nan
+            vU1d = np.ones_like(vb3) * np.nan
+            vU2d = np.ones_like(vb4) * np.nan
             # Save despiked velocities in dfb DataFrame
-            dfb = pd.DataFrame(data={'vb1d':vb1d, 'vb2d':vb2d, 'vb3d':vb3d,
-                                     'vb4d':vb4d, 'vb5d':vb5d},
-                               index=time_arr,
-                              )
+            dsb = xr.Dataset(data_vars={'vE': (['time', 'z'], vE), 
+                                        'vN': (['time', 'z'], vN),
+                                        'vU1': (['time', 'z'], vU1), 
+                                        'vU2': (['time', 'z'], vU2),
+                                        'vEd': (['time', 'z'], vEd), 
+                                        'vNd': (['time', 'z'], vNd),
+                                        'vU1d': (['time', 'z'], vU1d), 
+                                        'vU2d': (['time', 'z'], vU2d),
+                                        },
+                            coords={'time': (['time'], time_arr),
+                                    'z': (['z'], np.arange(28))
+                                    },
+                            )
             # Despike each beam at a time
-            for col in dfb:
+            cols_r = ['vE', 'vN', 'vU1', 'vU2']
+            cols_d = ['vEd', 'vNd', 'vU1d', 'vU2d']
+            for colr, cold in zip(cols_r, cols_d):
                 # Despike each vertical cell at a time
                 for j, zr in tqdm(enumerate(zhab)):
                     # Despike in 20-min bursts
-                    dfi = pd.DataFrame(data={'raw':vb1[:,j].copy(),
-                                             'des':np.ones_like(vb1[:,j])*np.nan,
+                    dfi = pd.DataFrame(data={'raw':dsb[colr][:,j].values.copy(),
+                                             'des':np.ones_like(dsb[cold][:,j].values)*np.nan,
                                             }, 
-                                        index=time_arr)
+                                       index=time_arr)
                     # Number of 20-min segments
-                    nseg = (dfb.index[-1] - dfb.index[0]).total_seconds() / 1200
+                    nseg = (pd.Timestamp(dsb.time[-1].values) - 
+                            pd.Timestamp(dsb.time[0].values)).total_seconds() / 1200
                     # Iterate over segments and despike
-                    for sn, seg in enumerate(np.array_split(dfb['raw'], np.round(nseg))):
+                    for sn, seg in enumerate(np.array_split(dfi['raw'], np.round(nseg))):
                         # Get segment start and end times
                         t0ss = seg.index[0]
                         t1ss = seg.index[-1]
@@ -395,7 +417,7 @@ class ADCP():
                             dfi['des'].loc[t0ss:t1ss] = self.despike_GN02(
                                 seg.values.squeeze())
                     # Save despiked segment in correct slice of dataframe
-                    dfb[col][:,j] = dfi['des'].values
+                    dsb[cold][:,j] = dfi['des'].values
         
         # Convert despiked beam velocities to E,N,U coordinates
 
@@ -439,11 +461,15 @@ class ADCP():
             data_vars['ASTd'] = (['time'], df_ast['des'].values)
         if despike_vel:
             # Despiked beam velocities
-            data_vars['vb1d'] = (['time', 'range'], dfb['vb1d'].values)
-            data_vars['vb2d'] = (['time', 'range'], dfb['vb2d'].values)
-            data_vars['vb3d'] = (['time', 'range'], dfb['vb3d'].values)
-            data_vars['vb4d'] = (['time', 'range'], dfb['vb4d'].values)
-            data_vars['vb5d'] = (['time', 'range'], dfb['vb5d'].values)
+#             data_vars['vB1d'] = (['time', 'range'], dfb['vb1d'].values)
+#             data_vars['vB2d'] = (['time', 'range'], dfb['vb2d'].values)
+#             data_vars['vB3d'] = (['time', 'range'], dfb['vb3d'].values)
+#             data_vars['vB4d'] = (['time', 'range'], dfb['vb4d'].values)
+#             data_vars['vB5d'] = (['time', 'range'], dfb['vb5d'].values)
+            data_vars['vEd'] = (['time', 'range'], dsb['vEd'].values)
+            data_vars['vNd'] = (['time', 'range'], dsb['vNd'].values)
+            data_vars['vU1d'] = (['time', 'range'], dsb['vU1d'].values)
+            data_vars['vU2d'] = (['time', 'range'], dsb['vU2d'].values)
 
         # Make output dataset and save to netcdf
         ds = xr.Dataset(data_vars=data_vars,
@@ -899,9 +925,9 @@ class ADCP():
         ds.attrs['segment_length'] = '1200 seconds'
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
-            comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
+            comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
             ds.attrs['comment'] = comments
-            config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
+            config = self.dfm[self.dfm['mooring_ID_long']==self.midl]['config'].item()
             ds.attrs['configurations'] = config
         ds.attrs['Conventions'] = 'CF-1.8'
         ds.attrs['featureType'] = "timeSeries"
@@ -1076,9 +1102,9 @@ class ADCP():
         ds.attrs['segment_length'] = '1200 seconds'
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
-            comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
+            comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
             ds.attrs['comment'] = comments
-            config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
+            config = self.dfm[self.dfm['mooring_ID_long']==self.midl]['config'].item()
             ds.attrs['configurations'] = config
         ds.attrs['Conventions'] = 'CF-1.8'
         ds.attrs['featureType'] = "timeSeries"
