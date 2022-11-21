@@ -766,7 +766,7 @@ class ADCP():
         # Interpolate over possible dropouts in AST signal
         zA = ds[z].interpolate_na(dim='time', fill_value="extrapolate").values
         zA = pd.Series(zA, index=ds.time.values)
-
+        print('sumNA zA: ', np.sum(np.isnan(zA)))
 
         # Count number of full 20-minute (1200-sec) segments
         t0s = pd.Timestamp(zA.index[0]) # Start timestamp
@@ -782,6 +782,7 @@ class ADCP():
 #                 pd.Timestamp(t0ss).round('20T')))
 #             print(' ')
             t1ss = seg.index[-1]
+            print('spec for {} - {}'.format(t0ss, t1ss))
             # Take time slice from dataset
             ds_seg = ds.sel(time=slice(t0ss, t1ss))
             # Estimate depth from surface of contamination region
@@ -797,10 +798,12 @@ class ADCP():
             vEd = ds_seg[u].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
                                               method='nearest').values
+            print('sumNA vEd: ', np.sum(np.isnan(vEd)))
             vEd = pd.Series(vEd, index=seg.index)
             vNd = ds_seg[v].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
                                               method='nearest').values
+            print('sumNA vNd: ', np.sum(np.isnan(vNd)))
             vNd = pd.Series(vNd, index=seg.index)
             # Estimate spectra from 20-min. segments
             dss = rpws.spec_uvz(z=seg, 
@@ -1380,7 +1383,7 @@ if __name__ == '__main__':
             fn_nc1 = os.path.join(outdir, 
                 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
                     adcp.mid, date1_str))
-            if not os.path.isfile(fn_nc0) or date0 != date1:
+            if not os.path.isfile(fn_nc0) or not os.path.isfile(fn_nc1):
                 # Read mat structure for velocities and 1D timeseries
                 dsv = adcp.loaddata_vel(fn_mat)
                 # Check if start and end dates the same
