@@ -62,7 +62,7 @@ class ADCP():
     """
     def __init__(self, datadir, ser, zp=0.08, fs=4, burstlen=1200, 
                  magdec=12.86, beam_ang=25, binsz=0.5, outdir=None, 
-                 mooring_info=None, patm=None, 
+                 mooring_info=None, patm=None, bathy=None, 
                  instr='NortekSignature1000'):
         """
         Initialize ADCP class.
@@ -79,6 +79,7 @@ class ADCP():
                      else, specify outdir
             mooring_info - str; path to mooring info excel file (optional)
             patm - pd.DataFrame time series of atmospheric pressure (optional)
+            bathy - xr.Dataset of SSA bathymetry (optional)
             instr - str; instrument name
         """
         self.datadir = datadir
@@ -119,6 +120,9 @@ class ADCP():
             self.t1 = None # No end time given
         # Atmospheric pressure time series, if provided
         self.patm = patm
+        # Bathymetry dataset if provided
+        self.bathy = bathy
+
 
     def _fns_from_ser(self):
         """
@@ -270,23 +274,84 @@ class ADCP():
         dai5 = da5.interp(time=time_arr, method='cubic',
                           kwargs={"fill_value": "extrapolate"}
                          )
-        vb5 = dai5.values
+        vb5i = dai5.values
+
         # Calculate E,N,U velocities from beam velocities
         # Note order and sign of beams!!!
-        beam_arr = np.array([-vb1, -vb3, -vb4, -vb2, -vb5])
-        print('beam_arr.shape: ', beam_arr.shape)
-#         enu_vel = rpct.beam2enu(beam_arr, heading=heading, 
-#                                 pitch=pitch, roll=roll)
+        beam_arr_i = np.array([-vb1, -vb3, -vb4, -vb2, -vb5i])
+        enu_vel_i = rpct.beam2enu(beam_arr_i, heading=heading, 
+                                  pitch=pitch, roll=roll)
+        # Do the same w/ non-interpolated (ni) vertical beam vel.
+        beam_arr_ni = np.array([-vb1, -vb3, -vb4, -vb2, -vb5])
+        enu_vel_ni = rpct.beam2enu(beam_arr_ni, heading=heading, 
+                                    pitch=pitch, roll=roll)
 
         # Nortek E,N,U velocities
         vE = mat['Data']['Burst_VelEast'].item().squeeze()
         vN = mat['Data']['Burst_VelNorth'].item().squeeze()
         vU1 = mat['Data']['Burst_VelUp1'].item().squeeze()
         vU2 = mat['Data']['Burst_VelUp2'].item().squeeze()
-#         print('vE.shape: ', vE.shape)
-#         print('vE: ', vE[:20,0])
-#         print('enu_vel.shape: ', enu_vel.shape)
-#         print('vEc: ', enu_vel[0,:20,0])
+
+        # Save calculated vs. Nortek ENU velocities for comparison and 
+        # testing with Matlab toolbox
+        dst = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
+                                    'vb2': (['time', 'z'], vb2),
+                                    'vb3': (['time', 'z'], vb3), 
+                                    'vb4': (['time', 'z'], vb4),
+                                    'vb5': (['time', 'z'], vb5),
+                                    'vb5i': (['time', 'z'], vb5i),
+                                    # ENU by Nortek
+                                    'vE': (['time', 'z'], vE), 
+                                    'vN': (['time', 'z'], vN),
+                                    'vU1': (['time', 'z'], vU1), 
+                                    'vU2': (['time', 'z'], vU2),
+                                    # ENU from HPR (interpolated)
+                                    'vEc': (['time', 'z'], enu_vel_i[0,:,:]), 
+                                    'vNc': (['time', 'z'], enu_vel_i[1,:,:]),
+                                    'vU1c': (['time', 'z'], enu_vel_i[2,:,:]), 
+                                    'vU2c': (['time', 'z'], enu_vel_i[3,:,:]),
+                                    # ENU from HPR (non-interpolated)
+                                    'vEni': (['time', 'z'], enu_vel_ni[0,:,:]), 
+                                    'vNni': (['time', 'z'], enu_vel_ni[1,:,:]),
+                                    'vU1ni': (['time', 'z'], enu_vel_ni[2,:,:]), 
+                                    'vU2ni': (['time', 'z'], enu_vel_ni[3,:,:]),
+                                    # H, P, R
+                                    'H': (['time'], heading), 
+                                    'P': (['time'], pitch), 
+                                    'R': (['time'], roll), 
+                                    },
+                        coords={'time': (['time'], time_vals.astype('f8')),
+                                'z': (['z'], np.arange(28).astype('i4'))
+                                },
+                        )
+        dst.time.encoding['units'] = time_units
+        dst.time.attrs['units'] = time_units
+        dst.time.attrs['standard_name'] = 'time'
+        encoding = {'time': {'zlib': False, '_FillValue': None},
+                    'z': {'zlib': False, '_FillValue': None},
+                    'vb1': {'zlib': False, '_FillValue': -9999.},
+                    'vb2': {'zlib': False, '_FillValue': -9999.},
+                    'vb3': {'zlib': False, '_FillValue': -9999.},
+                    'vb4': {'zlib': False, '_FillValue': -9999.},
+                    'vb5': {'zlib': False, '_FillValue': -9999.},
+                    'vE': {'zlib': False, '_FillValue': -9999.},
+                    'vN': {'zlib': False, '_FillValue': -9999.},
+                    'vU1': {'zlib': False, '_FillValue': -9999.},
+                    'vU2': {'zlib': False, '_FillValue': -9999.},
+                    'vEc': {'zlib': False, '_FillValue': -9999.},
+                    'vNc': {'zlib': False, '_FillValue': -9999.},
+                    'vU1c': {'zlib': False, '_FillValue': -9999.},
+                    'vU2c': {'zlib': False, '_FillValue': -9999.},
+                    'H': {'zlib': False, '_FillValue': -9999.},
+                    'P': {'zlib': False, '_FillValue': -9999.},
+                    'R': {'zlib': False, '_FillValue': -9999.},
+                   }  
+        # Save test dataset
+        fn_test = os.path.join(outdir, 'enu_test.nc')
+        dst.to_netcdf(fn_test, encoding=encoding)
+
+        raise ValueError('Test stop.')
+
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
@@ -356,38 +421,30 @@ class ADCP():
         if despike_vel:
             print('Despiking beam velocities ...')
             # Initialize arrays
-#             vb1d = np.ones_like(vb1) * np.nan
-#             vb2d = np.ones_like(vb2) * np.nan
-#             vb3d = np.ones_like(vb3) * np.nan
-#             vb4d = np.ones_like(vb4) * np.nan
-#             vb5d = np.ones_like(vb5) * np.nan
-#             # Save despiked velocities in dfb DataFrame
-#             dfb = pd.DataFrame(data={'vb1d':vb1d, 'vb2d':vb2d, 'vb3d':vb3d,
-#                                      'vb4d':vb4d, 'vb5d':vb5d},
-#                                index=time_arr,
-#                               )
-            # Initialize arrays
-            vEd = np.ones_like(vb1) * np.nan
-            vNd = np.ones_like(vb2) * np.nan
-            vU1d = np.ones_like(vb3) * np.nan
-            vU2d = np.ones_like(vb4) * np.nan
-            # Save despiked velocities in dfb DataFrame
-            dsb = xr.Dataset(data_vars={'vE': (['time', 'z'], vE), 
-                                        'vN': (['time', 'z'], vN),
-                                        'vU1': (['time', 'z'], vU1), 
-                                        'vU2': (['time', 'z'], vU2),
-                                        'vEd': (['time', 'z'], vEd), 
-                                        'vNd': (['time', 'z'], vNd),
-                                        'vU1d': (['time', 'z'], vU1d), 
-                                        'vU2d': (['time', 'z'], vU2d),
+            vb1d = np.ones_like(vb1) * np.nan
+            vb2d = np.ones_like(vb2) * np.nan
+            vb3d = np.ones_like(vb3) * np.nan
+            vb4d = np.ones_like(vb4) * np.nan
+            vb5d = np.ones_like(vb5) * np.nan
+            # Save despiked velocities in dsb Dataset
+            dsb = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
+                                        'vb2': (['time', 'z'], vb2),
+                                        'vb3': (['time', 'z'], vb3), 
+                                        'vb4': (['time', 'z'], vb4),
+                                        'vb5': (['time', 'z'], vb5),
+                                        'vb1d': (['time', 'z'], vb1d), 
+                                        'vb2d': (['time', 'z'], vb2d),
+                                        'vb3d': (['time', 'z'], vb3d), 
+                                        'vb4d': (['time', 'z'], vb4d),
+                                        'vb5d': (['time', 'z'], vb5d),
                                         },
                             coords={'time': (['time'], time_arr),
                                     'z': (['z'], np.arange(28))
                                     },
                             )
             # Despike each beam at a time
-            cols_r = ['vE', 'vN', 'vU1', 'vU2']
-            cols_d = ['vEd', 'vNd', 'vU1d', 'vU2d']
+            cols_r = ['vb1', 'vb2', 'vb3', 'vb4', 'vb5']
+            cols_d = ['vb1d', 'vb2d', 'vb3d', 'vb4d', 'vb5d']
             for colr, cold in zip(cols_r, cols_d):
                 # Despike each vertical cell at a time
                 for j, zr in tqdm(enumerate(zhab)):
@@ -437,7 +494,7 @@ class ADCP():
                    'vB3': (['time', 'range'], vb3),
                    'vB4': (['time', 'range'], vb4),
                    'vB5': (['time', 'range'], dai5.values),
-                   # East, North, Up velocities
+                   # East, North, Up velocities (by Nortek)
                    'vE': (['time', 'range'], vE),
                    'vN': (['time', 'range'], vN),
                    'vU1': (['time', 'range'], vU1),
@@ -461,15 +518,15 @@ class ADCP():
             data_vars['ASTd'] = (['time'], df_ast['des'].values)
         if despike_vel:
             # Despiked beam velocities
-#             data_vars['vB1d'] = (['time', 'range'], dfb['vb1d'].values)
-#             data_vars['vB2d'] = (['time', 'range'], dfb['vb2d'].values)
-#             data_vars['vB3d'] = (['time', 'range'], dfb['vb3d'].values)
-#             data_vars['vB4d'] = (['time', 'range'], dfb['vb4d'].values)
-#             data_vars['vB5d'] = (['time', 'range'], dfb['vb5d'].values)
-            data_vars['vEd'] = (['time', 'range'], dsb['vEd'].values)
-            data_vars['vNd'] = (['time', 'range'], dsb['vNd'].values)
-            data_vars['vU1d'] = (['time', 'range'], dsb['vU1d'].values)
-            data_vars['vU2d'] = (['time', 'range'], dsb['vU2d'].values)
+            data_vars['vB1d'] = (['time', 'range'], dfb['vb1d'].values)
+            data_vars['vB2d'] = (['time', 'range'], dfb['vb2d'].values)
+            data_vars['vB3d'] = (['time', 'range'], dfb['vb3d'].values)
+            data_vars['vB4d'] = (['time', 'range'], dfb['vb4d'].values)
+            data_vars['vB5d'] = (['time', 'range'], dfb['vb5d'].values)
+#             data_vars['vEd'] = (['time', 'range'], dsb['vEd'].values)
+#             data_vars['vNd'] = (['time', 'range'], dsb['vNd'].values)
+#             data_vars['vU1d'] = (['time', 'range'], dsb['vU1d'].values)
+#             data_vars['vU2d'] = (['time', 'range'], dsb['vU2d'].values)
 
         # Make output dataset and save to netcdf
         ds = xr.Dataset(data_vars=data_vars,
@@ -745,7 +802,7 @@ class ADCP():
         Estimate wave spectra from ADCP data in the input dataset ds.
         Uses the despiked N&E velocities and AST surface elevation
         timeseries by default. Returns new dataset with spectra and
-        some bulk parameters.
+        some bulk wave parameters.
 
         Horizontal velocities are taken from the first range bin
         below the region of contamination due to sidelobe reflections
@@ -849,20 +906,26 @@ class ADCP():
         time_vals = date2num(time, 
                              time_units, calendar='standard', 
                              has_year_zero=True)
-        ds.coords['time'] = time_vals.astype(float)
+        ds.coords['time'] = time_vals.astype('f8')
         # Make lon, lat coordinates
-        lon = self.dfm[self.dfm['mooring_ID_long']==self.midl]['longitude'].item()
-        ds = ds.assign_coords(lon=[lon])
-        lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
-        ds = ds.assign_coords(lat=[lat])
+        if self.bathy is None:
+            lon = self.dfm[self.dfm['mooring_ID_long']==self.midl]['longitude'].item()
+            ds = ds.assign_coords(lon=[lon])
+            lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
+            ds = ds.assign_coords(lat=[lat])
+        else:
+            lon = dsb['{}_llc'.format(self.mid)].sel(llc='longitude').item()
+            ds = ds.assign_coords(lon=[lon])
+            lat = dsb['{}_llc'.format(self.mid)].sel(llc='latitude').item()
+            ds = ds.assign_coords(lat=[lat])
         # Set variable attributes for output netcdf file
         ds.lat.attrs['standard_name'] = 'latitude'
-        ds.lat.attrs['long_name'] = 'Approximate latitude of small-scale array rock summit'
+        ds.lat.attrs['long_name'] = 'Mooring latitude estimated from orthophoto'
         ds.lat.attrs['units'] = 'degrees_north'
         ds.lat.attrs['valid_min'] = -90.0
         ds.lat.attrs['valid_max'] = 90.0
         ds.lon.attrs['standard_name'] = 'longitude'
-        ds.lon.attrs['long_name'] = 'Approximate longitude of small-scale array rock summit'
+        ds.lon.attrs['long_name'] = 'Mooring longitude estimated from orthophoto'
         ds.lon.attrs['units'] = 'degrees_east'
         ds.lon.attrs['valid_min'] = -180.0
         ds.lon.attrs['valid_max'] = 180.0
@@ -874,36 +937,6 @@ class ADCP():
         ds.vel_binh.attrs['units'] = 'm'
         ds.vel_binh.attrs['standard_name'] = 'height'
         ds.vel_binh.attrs['long_name'] = 'horizontal velocity bin center height above seabed'
-        ds.Hm0.attrs['units'] = 'm'
-        ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
-        ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
-        ds.Te.attrs['units'] = 's'
-        ds.Te.attrs['standard_name'] = 'sea_surface_wave_energy_period'
-        ds.Te.attrs['long_name'] = 'energy-weighted wave period'
-        ds.Tp_ind.attrs['units'] = 's'
-        ds.Tp_ind.attrs['standard_name'] = 'sea_surface_primary_swell_wave_period_at_variance_spectral_density_maximum'
-        ds.Tp_ind.attrs['long_name'] = 'wave period at maximum spectral energy'
-        ds.Tp_Y95.attrs['units'] = 's'
-        ds.Tp_Y95.attrs['standard_name'] = 'sea_surface_primary_swell_wave_period_at_variance_spectral_density_maximum'
-        ds.Tp_Y95.attrs['long_name'] = 'peak wave period following Young (1995, Ocean Eng.)'
-        ds.Dp_ind.attrs['units'] = 'angular_degree' 
-        ds.Dp_ind.attrs['standard_name'] = 'sea_surface_wave_from_direction_at_variance_spectral_density_maximum'
-        ds.Dp_ind.attrs['long_name'] = 'peak wave direction at maximum energy frequency'
-        ds.Dp_Y95.attrs['units'] = 'angular_degree' 
-        ds.Dp_Y95.attrs['standard_name'] = 'sea_surface_wave_from_direction_at_variance_spectral_density_maximum'
-        ds.Dp_Y95.attrs['long_name'] = 'peak wave direction at Tp_Y95 frequency'
-        ds.nu_LH57.attrs['units'] = 'dimensionless' 
-        ds.nu_LH57.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density_bandwidth'
-        ds.nu_LH57.attrs['long_name'] = 'spectral bandwidth following Longuet-Higgins (1957)'
-        # Fill values
-        ds.vel_binh.attrs['missing_value'] = fillvalue
-        ds.Hm0.attrs['missing_value'] = fillvalue
-        ds.Te.attrs['missing_value'] = fillvalue
-        ds.Tp_ind.attrs['missing_value'] = fillvalue
-        ds.Tp_Y95.attrs['missing_value'] = fillvalue
-        ds.Dp_Y95.attrs['missing_value'] = fillvalue
-        ds.Dp_ind.attrs['missing_value'] = fillvalue
-        ds.nu_LH57.attrs['missing_value'] = fillvalue
 
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
@@ -943,31 +976,13 @@ class ADCP():
 
         # Set encoding before saving
         encoding = {'time': {'zlib': False, '_FillValue': None},
-                    'freq': {'zlib': False, '_FillValue': None},
                     'lat': {'zlib': False, '_FillValue': None},
                     'lon': {'zlib': False, '_FillValue': None},
-                    'Euu': {'_FillValue': fillvalue},        
-                    'Evv': {'_FillValue': fillvalue},        
-                    'Ezz': {'_FillValue': fillvalue},        
-                    'a1': {'_FillValue': fillvalue},        
-                    'a2': {'_FillValue': fillvalue},        
-                    'b1': {'_FillValue': fillvalue},        
-                    'b2': {'_FillValue': fillvalue},        
-                    'dspr': {'_FillValue': fillvalue},        
-                    'vel_binh': {'_FillValue': fillvalue},        
-                    'Hm0': {'_FillValue': fillvalue},        
-                    'Te': {'_FillValue': fillvalue},
-                    'Tp_ind': {'_FillValue': fillvalue},
-                    'Tp_Y95': {'_FillValue': fillvalue},
-                    'Dp_ind': {'_FillValue': fillvalue},
-                    'Dp_Y95': {'_FillValue': fillvalue},
-                    'nu_LH57': {'_FillValue': fillvalue},
                    }     
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
         ds.to_netcdf(fn, encoding=encoding)
-
 
 
     def save_spec_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
@@ -1258,6 +1273,11 @@ if __name__ == '__main__':
     # Mooring info excel file path (used when initializing ADV class)
     rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
     fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
+
+    # Read bathymetry netcdf file
+    bathydir = os.path.join(rootdir, 'Bathy')
+    fn_bathy = os.path.join(bathydir, 'Asilomar_2022_SSA_bathy.nc')
+    dsb = xr.decode_cf(xr.open_dataset(fn_bathy, decode_coords='all'))
     
     # Check if processing just one serial number or all
     if args.ser.lower() == 'all':
@@ -1311,7 +1331,8 @@ if __name__ == '__main__':
             print('Making output figure dir. {}'.format(figdir))
             os.mkdir(figdir)
         # Initialize class
-        adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo)
+        adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, patm=dfa,
+                    bathy=dsb)
         # Loop over raw .mat files and get HPR
         for i,fn_mat in tqdm(enumerate(adcp.fns)):
             # Define figure filename
