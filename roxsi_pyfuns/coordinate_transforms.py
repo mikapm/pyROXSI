@@ -115,38 +115,41 @@ def beam2enu(beam_vel, heading, pitch, roll, theta=25, nortek=True,
     References:
         Appendix A of Dewey & Stringer (2007), Equations A3-A11
     """
-    # Copy input velocities
+    # Copy input velocities and angles
     vb1 = beam_vel[0,:,:].copy()
     vb2 = beam_vel[1,:,:].copy()
     vb3 = beam_vel[2,:,:].copy()
     vb4 = beam_vel[3,:,:].copy()
     vb5 = beam_vel[4,:,:].copy()
+    hd = heading.copy()
+    pt = pitch.copy()
+    rl = roll.copy()
 
     # Convert angles to radians if needed
     if deg_in:
-        heading *= np.pi/180
-        pitch *= np.pi/180
-        roll *= np.pi/180
-    
+        hd = np.deg2rad(hd)
+        pt = np.deg2rad(pt)
+        rl = np.deg2rad(rl)
+        theta = np.deg2rad(theta)
+
     # Correct Nortek heading angles and pitch sign if needed
     if nortek:
-        ang_corr = 90 * np.pi/180
-        heading -= ang_corr
-        pitch *= -1
+        ang_corr = np.deg2rad(90)
+        hd -= ang_corr
+        rl *= -1
 
     # Time-dependent angles (heading, pitch and roll).
-    Sph1 = np.sin(heading)
-    Sph2 = np.sin(pitch)
-    Sph3 = np.sin(roll)
-    Cph1 = np.cos(heading)
-    Cph2 = np.cos(pitch)
-    Cph3 = np.cos(roll)
+    Sph1 = np.sin(hd)
+    Sph2 = np.sin(rl)
+    Sph3 = np.sin(pt)
+    Cph1 = np.cos(hd)
+    Cph2 = np.cos(rl)
+    Cph3 = np.cos(pt)
 
-    # Correct headings (D&S 2007, eq. A2)
-    Sph2Sph3 = Sph2 * Sph3
-    heading += np.arcsin(Sph2Sph3 / np.sqrt(Cph2**2 + Sph2Sph3**2))
-    Sph1 = np.sin(heading)
-    Cph1 = np.cos(heading)
+    # Correct pitch (D&S 2007, eq. A1)
+    pitch = np.arcsin((Sph2 * Cph3) / np.sqrt(1 - (Sph2 * Sph3)**2))
+    Sph2 = np.sin(rl)
+    Cph2 = np.cos(rl)
 
     # Convert instrument-referenced velocities
     # to Earth-referenced velocities.
@@ -161,6 +164,7 @@ def beam2enu(beam_vel, heading, pitch, roll, theta=25, nortek=True,
     cz1 = Cph1 * Sph3 - Sph1 * Sph2 * Cph3
     cz2 = Sph1 * Sph3 + Cph1 * Sph2 * Cph3
     cz3 = Cph2 * Cph3
+    print('cz3: ', cz3[:10])
 
     # Convert beam-referenced velocities to instrument-referenced 
     # velocities.
@@ -171,21 +175,21 @@ def beam2enu(beam_vel, heading, pitch, roll, theta=25, nortek=True,
     # transformation mode is set to "instrument coordinates" 
     # before deployment.
     xyz_vel = beam2xyz(np.array([vb1, vb2, vb3, vb4, vb5]), theta)
-    print('xyz_vel.shape: ', xyz_vel.shape)
 
     w5 = np.multiply(xyz_vel[3,:,:],  cz3) # w from beam 5 only.
+    print('w5: ', w5[0,:10])
 
     if beam5:
         # Use vertical 5th beam to calculate vE, vN & vU
         vE = (np.multiply(xyz_vel[0,:,:], cx1) + 
               np.multiply(xyz_vel[1,:,:], cy1) +
               np.multiply(xyz_vel[3,:,:], cz1))
-        print('shape: ', vE.shape)
         vN = (-np.multiply(xyz_vel[0,:,:], cx2) + 
               np.multiply(xyz_vel[1,:,:], cy2) - 
               np.multiply(xyz_vel[3,:,:], cz2))
         vU = (-np.multiply(xyz_vel[0,:,:], cx3) + 
-              np.multiply(xyz_vel[1,:,:], cy3) + w5)
+              np.multiply(xyz_vel[1,:,:], cy3) + 
+              w5)
     else:
         # Use only beams 1-4
         vE = + xyz_vel[0,:,:]*cx1 + xyz_vel[1,:,:]*cy1 + xyz_vel[2,:,:]*cz1
@@ -220,7 +224,6 @@ def beam2xyz(beam_vel, theta):
         nb, nt, nz = beam_vel.shape
         # Swap axes so the matrix has the right shape (nb, nz, nt)
         beam_vel = np.swapaxes(beam_vel, 1, 2)
-    print('beam_vel.shape: ', beam_vel.shape)
 
     # Multiplication factors
     uvfac = 1 / (2 * np.sin(theta))
@@ -241,7 +244,7 @@ def beam2xyz(beam_vel, theta):
     # Multiply velocity components with respective factors
     xyz_vel[0,:,:] *= uvfac # East velocity
     xyz_vel[1,:,:] *= uvfac # North velocity
-    xyz_vel[2,:,:] *= wfac # Up velocity
+    xyz_vel[2,:,:] *= wfac # Up velocity 1
 
     return xyz_vel
 
