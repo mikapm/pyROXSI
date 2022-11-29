@@ -2,20 +2,27 @@ name: roxsi
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
+  - python=3.9.14
   - ipython
   - pip
   - ipympl
+  - utm
   - openpyxl
   - PyPDF2
   - jupyter
   - numpy
   - scipy
   - pandas
+  - geopandas=0.11.1
   - xarray
   - statsmodels
   - matplotlib
+  - cmocean
+  - motionless
+  - salem
+  - shapely
   - scikit-learn
+  - scikit-image
   - cftime
   - cf_xarray
   - astropy
