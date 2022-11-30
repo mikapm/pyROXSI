@@ -14,18 +14,15 @@ from datetime import datetime as DT
 from scipy.io import loadmat
 from scipy.signal import detrend
 import matplotlib.pyplot as plt
-import ipympl
-# Interactive plots
-%matplotlib widget 
 # from roxsi_pyfuns import transfer_functions as tf
-from roxsi_pyfuns import transfer_functions as tf
-from roxsi_pyfuns import wave_spectra as ws
+from roxsi_pyfuns import transfer_functions as rptf
+from roxsi_pyfuns import wave_spectra as rpws
 
 class RBR():
     """
     Main RBR data class.
     """
-    def __init__(self, datadir, ser, zp=0.02, fs=16, burstlen=1200, 
+    def __init__(self, datadir, ser, zp=0.08, fs=16, burstlen=1200, 
                  outdir=None, mooring_info=None, patm=None, bathy=None, 
                  instr='RBRSoloD'):
         """
@@ -53,10 +50,12 @@ class RBR():
         self.zp = zp
         self.fs = fs
         self.dt = 1 / self.fs # Sampling rate (sec)
-        self.magdec = magdec
-        self.beam_ang = beam_ang
-        self.binsz = binsz
         self.instr = instr
+        # .mat dict instrument key
+        if self.instr == 'RBRDuetDT':
+            self.matkey = 'DUETDT'
+        elif self.instr == 'RBRSoloD':
+            self.matkey = 'SOLOD'
         if outdir is None:
             # Use datadir as outdir
             self.outdir = datadir
@@ -87,6 +86,51 @@ class RBR():
         # Bathymetry dataset if provided
         self.bathy = bathy
 
+    def _fns_from_ser(self):
+        """
+        Returns a list of .mat filenames in self.datadir corresponding
+        to serial number.
+        """
+        # List all .mat files with serial number in filename
+        self.fns = sorted(glob.glob(os.path.join(self.datadir,
+            'roxsi_*_{}_*.mat'.format(self.ser))))
+
+
+    def p2eta_hyd(self, p, rho0=1025, grav=9.81):
+        """
+        Convert pressure measurements to hydrostatic depth with
+        units of m.
+        
+        Parameters:
+            p - pd.Series; time series of water pressure
+            rho0 - scalar; water density (kg/m^3)
+            grav - scalar; gravitational acceleration (m/s^2)
+        """
+        # Use hydrostatic assumption to get pressure head with unit [m]
+        eta_hyd = rptf.eta_hydrostatic(p, self.patm, rho0=rho0, 
+                                       grav=grav, interp=True)
+        # Check if hydrostatic pressure is ever above 0
+        if eta_hyd.max() == 0.0:
+            print('Instrument most likely not in water')
+            # Return NaN array for linear sea surface elevations
+            eta_hyd = np.ones_like(p) * np.nan
+
+        return eta_hyd
+
+
+    def p2eta_lin(self, eta_hyd, M=512*8, fmin=0.05, fmax=0.33, 
+                  att_corr=True):
+        """
+        Convert hydrostatic depth (m) to sea-surface elevation
+        using linear wave theory.
+        """
+        # Initialize TRF class
+        trf = rptf.TRF(fs=self.fs, zp=self.zp)
+        # Apply linear transfer function
+        eta = trf.p2eta_lin(eta_hyd, M=M, fmin=fmin, fmax=fmax,
+                            att_corr=att_corr,)
+        return eta
+
 
 if __name__ == '__main__':
     """
@@ -106,13 +150,25 @@ if __name__ == '__main__':
         parser.add_argument("-ser", 
                 help=('Instrument serial number. To loop through all, select "ALL".'),
                 type=str,
-                choices=['103088', '103094', '103110', '103063', '103206', 'ALL'],
-                default='103094',
+                choices=['210356', '210357', '210358', '210359', '210360', '210361',
+                         '41428', '41429', '124107', '124108', '124109', '210362', 'all'],
+                default='210356',
+                )
+        parser.add_argument("-instr", 
+                help=('Instrument name.'),
+                type=str,
+                choices=['RBRDuetDT', 'RBRSoloD'],
+                default='RBRDuetDT',
                 )
         parser.add_argument("-M", 
                 help=("Pressure transform segment window length"),
                 type=int,
                 default=512*8,
+                )
+        parser.add_argument("-fs", 
+                help=("Sampling frequency [Hz]"),
+                type=float,
+                default=16.,
                 )
         parser.add_argument("-fmin", 
                 help=("Min. frequency for pressure attenuation correction"),
@@ -139,35 +195,88 @@ if __name__ == '__main__':
 
         return parser.parse_args(**kwargs)
 
+    # Call args parser to create variables out of input arguments
+    args = parse_args(args=sys.argv[1:])
+
+    # Read atmospheric pressure time series and calculate
+    # atmospheric pressure anomaly
+    fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
+    if not os.path.isfile(fn_patm):
+        # csv file does not exist -> read mat file and generate dataframe
+        fn_matp = os.path.join(rootdir, 'noaa_atm_pres_simple.mat')
+        mat = loadmat(fn_matp)
+        mat_pres = mat['A']['atm_pres'].item().squeeze()
+        mat_time = mat['A']['time_vec'].item().squeeze() # In Matlab char() format
+        # Make into pandas dataframe
+        dfa = pd.DataFrame(data={'hpa':mat_pres}, 
+                           index=pd.to_datetime(mat_time))
+        dfa.index.rename('time', inplace=True)
+        # convert from mbar to hpa
+        dfa['hpa'] /= 100
+        dfa['hpa'] -= 0.032 # Empirical correction factor
+        # Calculate anomaly from mean
+        dfa['hpa_anom'] = dfa['hpa'] - dfa['hpa'].mean()
+        # Save as csv
+        dfa.to_csv(fn_patm)
+    else:
+        dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
+
     # Define paths and load data
-    datestr = '20220630'
-    # SSA mooring ID's for DuetDT: [L2vp, L4vp, C15p, C2vp, C3vp, C4vp]
-    mooring_id = 'C15p'
-    sensor_id = 'duetDT'
-    rootdir = '/media/mikapm/ROXSI/Asilomar2022/SmallScaleArray/RBRDuetDT/Level1/'
+    data_root = os.path.join(args.dr, args.instr)
+    matdir = os.path.join(data_root, 'Level1', 'mat')
+    outdir = os.path.join(data_root, 'Level1', 'netcdf')
+    # Initialize RBR class object
+    rbr = RBR(datadir=matdir, ser=args.ser, fs=args.fs, 
+              instr=args.instr, patm=dfa)
 
+    # Iterate over daily mat files and concatenate into pd.DataFrame
+    for fi, fn_mat in enumerate(rbr.fns):
+        print('Loading pressure sensor mat file {}'.format(os.path.basename(fn_mat)))
+        mat = loadmat(fn_mat)
+        # Read pressure time series and timestamps
+        pt = np.array(mat[rbr.matkey]['P'].item()).squeeze()
+        time_mat = np.array(mat[rbr.matkey]['time_dnum'].item()).squeeze()
+        time_ind = pd.to_datetime(time_mat-719529,unit='d') # Convert timestamps
+        # Get hydrostatic pressure (depth)
+        sp = pd.Series(data=pt, index=time_ind)
+        eta_hyd = rbr.p2eta_hyd(sp)
+        # Make pandas DataFrame
+        if rbr.instr == 'RBRSoloD':
+            dfp = pd.DataFrame(data={'pressure':pt,
+                                     'eta_hyd':eta_hyd,
+                                     'eta_lin':np.ones_like(pt)*np.nan,
+                                     }, 
+                               index=time_ind)
+        elif rbr.instr == 'RBRDuetDT':
+            # Also save temperature from Duets
+            temp = np.array(mat[rbr.matkey]['temperature'].item()).squeeze()
+            dfp = pd.DataFrame(data={'pressure':pt,
+                                     'temperature':temp,
+                                     'eta_hyd':eta_hyd,
+                                     'eta_lin':np.ones_like(pt)*np.nan,
+                                     }, 
+                               index=time_ind)
 
-    # Data directory
-    if sensor_id == 'duetDT':
-        datadir = '/home/mikapm/ROXSI/Asilomar2022/SmallScaleArray/RBRDuetDT/Level1/'
-    elif sensor_id == 'soloD':
-        rootdir = '/home/mikapm/ROXSI/Asilomar2022/SmallScaleArray/RBRSoloD/Level1/'
-        rootdir = '/home/mikapm/ROXSI/Asilomar2022/SmallScaleArray/RBRSoloD/Level1/'
-    datadir = os.path.join(rootdir, 'mat')
-    # Output figure directory
-    figdir = os.path.join(rootdir, 'p2eta_figs')
-
-    # Load ROXSI pressure sensor time series
-    fn_mat = glob.glob(os.path.join(datadir, 'roxsi_{}_L1_{}_*_{}.mat'.format(
-        sensor_id, mooring_id, datestr)))[0]
-    print('Loading pressure sensor mat file {}'.format(os.path.basename(fn_mat)))
-    mat = loadmat(fn_mat)
-    # Read pressure time series and timestamps
-    pt = np.array(mat['DUETDT']['Pwater'].item()).squeeze()
-    time_mat = np.array(mat['DUETDT']['time_dnum'].item()).squeeze()
-    time_ind = pd.to_datetime(time_mat-719529,unit='d') # Convert timestamps
-    # Read sampling frequency and sensor height above seabed
-    fs = int(mat['DUETDT']['sample_freq'].item()[0].split(' ')[0])
-    zp = mat['DUETDT']['Zbed'].item().squeeze().item()
-    # Make pandas DataFrame
-    dfp = pd.DataFrame(data={'eta_hyd':pt}, index=time_ind)
+        # Crop timeseries at last full 20-min. segment
+        if fi == (len(rbr.fns) - 1):
+            t_end = dfp.index[-1].floor('20T')
+            dfp = dfp.loc[:t_end]
+        # Count number of full 20-minute (1200-sec) segments
+        t0s = pd.Timestamp(dfp.index[0]) # Start timestamp
+        t1s = pd.Timestamp(dfp.index[-1]) # End timestamp
+        nseg = np.round((t1s - t0s).total_seconds() / 1200)
+        # Iterate over 20-minute segments and convert pressure to
+        # sea-surface elevation
+        for sn, seg in enumerate(np.array_split(dfp['eta_hyd'], nseg)):
+            # There's a gap of missing data on 2022-07-12 between 
+            # 05:00 - 05:20. Skip that.
+            if np.sum(np.isnan(seg.values)) > 1000:
+                print('Too many gaps.')
+                continue
+            # Get segment start and end times
+            t0ss = seg.index[0]
+            t1ss = seg.index[-1]
+            # Convert hydrostatic depth to eta w/ linear TRF
+            dfp['eta_lin'].loc[t0ss:t1ss] = rbr.p2eta_lin(
+                seg.interpolate(method='ffill').interpolate(method='bfill').values,
+                M=args.M, fmin=args.fmin, fmax=args.fmax)
