@@ -209,8 +209,6 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
                   }
     fft_dict = {'{}'.format(k):np.ones(n_freqs)*np.nan for k in order}
-    # Also store PSD estimate(s)
-    psd_dict = {'{}{}'.format(k, k):np.ones(n_freqs)*np.nan for k in order}
     # Is a timestamp given?
     if timestamp is not None:
         time = [timestamp] # time coordinate
@@ -363,8 +361,6 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     f = f[f_mask]
     # Save scalar variables with time coordinate if specified
     if timestamp is not None:
-        # Peak direction
-        ds['Dp_ind'] = (['time'], np.atleast_1d(Dp))
         # Significant wave height
         ds['Hm0'] = (['time'], np.atleast_1d(4*np.sqrt(np.sum(E)*bandwidth)))
         # Energy period
@@ -375,15 +371,16 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         # Peak period following Young (1995)
         fpy = peak_freq(E, f)
         ds['Tp_Y95'] = (['time'], np.atleast_1d(1 / fpy))
-        # Peak direction at Y95 peak freq.
-        indpy = (np.abs(f - fpy)).argmin()
-        Dpy = dirs[indpy]
-        ds['Dp_Y95'] = (['time'], np.atleast_1d(Dpy))
         # Spectral bandwidth following Longuet-Higgins (1957)
         ds['nu_LH57'] = (['time'], np.atleast_1d(spec_bandwidth(E, f)))
+        if ndim == 3:
+            # Peak direction
+            ds['Dp_ind'] = (['time'], np.atleast_1d(Dp))
+            # Peak direction at Y95 peak freq.
+            indpy = (np.abs(f - fpy)).argmin()
+            Dpy = dirs[indpy]
+            ds['Dp_Y95'] = (['time'], np.atleast_1d(Dpy))
     else:
-        # Peak direction
-        ds['Dp_ind'] = ([], Dp)
         # Significant wave height
         ds['Hm0'] = ([], 4 * np.sqrt(np.sum(E)*bandwidth))
         # Energy period
@@ -394,12 +391,15 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         # Peak period following Young (1995)
         fpy = peak_freq(E, f)
         ds['Tp_Y95'] = ([], (1 / fpy))
-        # Peak direction at Y95 peak freq.
-        indpy = (np.abs(f - fpy)).argmin()
-        Dpy = dirs[indpy]
-        ds['Dp_Y95'] = ([], Dpy)
         # Spectral bandwidth following Longuet-Higgins (1957)
         ds['nu_LH57'] = ([], spec_bandwidth(E, f))
+        if ndim == 3:
+            # Peak direction
+            ds['Dp_ind'] = ([], Dp)
+            # Peak direction at Y95 peak freq.
+            indpy = (np.abs(f - fpy)).argmin()
+            Dpy = dirs[indpy]
+            ds['Dp_Y95'] = ([], Dpy)
 
     # Save fmin, fmax in scalar variable attributes
     ds['Hm0'].attrs['fmin'] = fmin
@@ -410,9 +410,12 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     ds['Tp_ind'].attrs['fmax'] = fmax
     ds['Tp_Y95'].attrs['fmin'] = fmin
     ds['Tp_Y95'].attrs['fmax'] = fmax
-    ds['Dp_Y95'].attrs['fmin'] = fmin
-    ds['Dp_Y95'].attrs['fmax'] = fmax
     ds['nu_LH57'].attrs['fmin'] = fmin
     ds['nu_LH57'].attrs['fmax'] = fmax
+    if ndim == 3:
+        ds['Dp_ind'].attrs['fmin'] = fmin
+        ds['Dp_ind'].attrs['fmax'] = fmax
+        ds['Dp_Y95'].attrs['fmin'] = fmin
+        ds['Dp_Y95'].attrs['fmax'] = fmax
 
     return ds
