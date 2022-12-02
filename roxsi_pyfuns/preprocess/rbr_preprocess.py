@@ -341,10 +341,10 @@ if __name__ == '__main__':
                 default=r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray',
                 )
         parser.add_argument("-ser", 
-                help=('Instrument serial number. To loop through all, select "ALL".'),
+                help=('Instrument serial number.'),
                 type=str,
                 choices=['210356', '210357', '210358', '210359', '210360', '210361',
-                         '41428', '41429', '124107', '124108', '124109', '210362', 'all'],
+                         '41428', '41429', '124107', '124108', '124109', '210362'],
                 default='210356',
                 )
         parser.add_argument("-instr", 
