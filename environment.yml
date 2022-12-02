@@ -23,6 +23,7 @@ dependencies:
   - shapely
   - scikit-learn
   - scikit-image
+  - nbconvert
   - cftime
   - cf_xarray
   - astropy
