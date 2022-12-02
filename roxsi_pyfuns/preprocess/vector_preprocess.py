@@ -544,7 +544,7 @@ class ADV():
         ds.pitch_ang.attrs['standard_name'] = 'platform_pitch_angle'
         ds.roll_ang.attrs['standard_name'] = 'platform_roll_angle'
         ds.pressure.attrs['standard_name'] = 'sea_water_pressure_due_to_sea_water'
-        ds.eta_hyd.attrs['standard_name'] = 'sea_surface_elevation'
+        ds.eta_hyd.attrs['standard_name'] = 'depth'
         ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         # Long names of velocity components
         ln_ux = 'x component of raw velocity in instrument reference frame'
