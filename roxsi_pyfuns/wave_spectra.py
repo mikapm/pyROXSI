@@ -419,3 +419,24 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         ds['Dp_Y95'].attrs['fmax'] = fmax
 
     return ds
+
+
+def bispectrum(x, fs, nfft=128, overlap=75, wind='rect', mg=5):
+    """
+    Compute the bispectrum of signal x using FFT-based approach.
+    Based on fun_compute_bispectrum.m by Kevin Martins.
+
+    Parameters:
+        x - 1D array; input signal
+        fs - scalar; sampling frequency
+        nfft - scalar; fft length
+        overlap - scalar; percentage overlap
+        wind - str; Type of window for tappering (only 'rect'
+               implemented)
+        mg - scalar; length of spectral bandwith over which 
+             to merge
+
+    Returns:
+        dsb - xr.Dataset with bispectral information
+    """
+
