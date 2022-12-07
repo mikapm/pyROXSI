@@ -4,7 +4,8 @@ Functions to estimate surface wave variance spectra.
 
 import numpy as np
 import xarray as xr
-from scipy.signal import detrend
+from scipy.signal import detrend, windows
+from roxsi_pyfuns import transfer_functions as rptf
 
 def spec_moment(S, F, order):
     """
@@ -421,22 +422,303 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     return ds
 
 
-def bispectrum(x, fs, nfft=128, overlap=75, wind='rect', mg=5):
+def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg=5,
+               timestamp=None, ):
     """
     Compute the bispectrum of signal x using FFT-based approach.
     Based on fun_compute_bispectrum.m by Kevin Martins.
 
     Parameters:
-        x - 1D array; input signal
+        x - 1D array; input signal (hydrostatic sea surface)
         fs - scalar; sampling frequency
-        nfft - scalar; fft length
+        h0 - scalar; mean water depth [m]
+        fp - scalar; peak frequency. If None, computes it from spectrum of x.
+        nfft - scalar; fft length (default 512*fs)
         overlap - scalar; percentage overlap
-        wind - str; Type of window for tappering (only 'rect'
+        wind - str; Type of window for tappering (only 'rectangular'
                implemented)
         mg - scalar; length of spectral bandwith over which 
              to merge
+        timestamp - if not None, assigns a time coordinate using
+                    given value to output dataset.
 
     Returns:
         dsb - xr.Dataset with bispectral information
     """
+    lx = len(x) # Length of input signal
+    # Compute shallowness and nonlinearity parameters
+    if fp is None:
+        dss = spec_uvz(x, fs=fs)
+        fp = 1 / dss.Tp_Y95.item() # Peak frequency following Young (1995)
+    kp = rptf.waveno_full(2*np.pi*fp, d=h0).item()
+    mu = (kp * h0)**2
+    mu_info = 'Shallowness parameter'
+    eps = 2 * np.nanstd(x) / h0
+    eps_info = 'Nonlinear "amplitude" parameter'
+    Ur = eps / mu
+    Ur_info  = 'Ursell parameter'
+    print('h0={:.4f}, kp={:.4f}, mu={:.4f}, eps={:.4f}, Ur={:.4f}'.format(
+      h0, kp, mu, eps, Ur))
 
+    # Nonlinear moderately dispersive reconstruction 
+    if nfft is None:
+        nfft = 512 * fs
+    overlap = min(99, max(overlap, 0))
+    nfft -= np.remainder(nfft, 2)
+    eadvance = int(np.fix(nfft * overlap / 100))
+    nadvance = int(nfft - eadvance)
+    nblock   = int(np.fix((lx-eadvance)/nadvance)+1) # +1 for not throwing away data
+    print('overlap={}, nfft={}, eadvance={}, nadvance={}, nblock={}'.format(
+        overlap, nfft, eadvance, nadvance, nblock))
+    freqs = np.arange(-nfft/2, nfft/2) / nfft * fs
+    df = freqs[1] - freqs[0]
+
+    # Initialize arrays
+    P = np.zeros(nfft+1) # Power spectrum [m^2]
+    B = np.zeros((nfft+1, nfft+1)).astype(complex) # Bispectrum [m^3]
+    # print('freqs={}, len(freqs)={}, df={}, P={}, B={}'.format(
+    #     freqs, len(freqs), df, P.shape, B.shape))
+
+    # Initialization
+    A = np.zeros((nfft+1, nblock)).astype(complex) # Fourier coeffs for each block
+    nmid = int(nfft / 2) # Middle frequency index (f = 0)
+    locseg = np.arange(nfft) # Indices for first block
+
+    # Computing FFT (loop over blocks)
+    for kk in range(nblock-2):
+        # print('kk: ', kk)
+        # Preparing block kk timeseries
+        # For the rectangular window, we force a certain continuity between blocks
+        xseg = x[locseg]
+        xseg = detrend(xseg) # Detrend
+        xseg -= np.mean(xseg) # De-mean
+        if wind == 'rectangular':
+            # Trying to make it periodic
+            count = 0
+            while abs(xseg[-1]-xseg[0]) > 0.2*np.std(xseg):
+                # Updating locseg
+                if kk == 0:
+                    locseg += 1
+                else:
+                    locseg -= 1
+                # Updating xseg
+                xseg = x[locseg]
+                count += 1
+            if count > 1:
+                xseg = detrend(xseg) # Detrend
+                xseg -= np.mean(xseg) # De-mean
+            # Smoothing both the timeseries' head and tail
+            beg_ts = xseg[:2*fs] 
+            end_ts = xseg[-2*fs:]
+            merged_ts0 = np.concatenate([end_ts, beg_ts])
+            merged_ts = merged_ts0.copy()
+            dti = int(np.round(fs/8))
+            for tt in range(dti, len(merged_ts)-dti-1):
+                merged_ts[tt] = np.mean(merged_ts0[tt-dti:tt+dti+1])
+                # print('m: ', merged_ts0[tt-dti:tt+dti+1])
+            xseg[:2*fs] = merged_ts[-2*fs:]
+            xseg[-2*fs:] = merged_ts[:2*fs]
+            
+            # Final windowing
+            ww = windows.boxcar(nfft) 
+            normFactor = np.mean(ww**2)
+            xseg *= (ww / np.sqrt(normFactor))
+
+            # FFT of segment
+            A_loc = np.fft.fft(xseg , nfft) / nfft
+            A[:,kk] = np.concatenate([A_loc[nmid:nfft], A_loc[:nmid+1]]) # FFTshift
+            A[nmid,kk] = 0
+
+            # Indices for next block
+            locseg += nadvance
+        
+    # Last block, to not throw out data
+    kk = nblock - 1
+    locseg = np.arange(len(x)-nfft,len(x))
+    xseg = x[locseg]
+    xseg = detrend(xseg)
+    xseg -= np.mean(xseg)
+    if wind == 'rect':
+        # Trying to make it periodic
+        count = 0
+        while abs(xseg[-1]-xseg[0]) > 0.2*np.std(xseg):
+            # Updating locseg
+            locseg -= 1
+            # Updating xseg
+            xseg = x[locseg]
+            count += 1
+        if count > 1:
+            xseg = detrend(xseg)
+            xseg -= np.mean(xseg)
+        # Smoothing both the timeseries' head and tail
+        beg_ts = xseg[:2*fs] 
+        end_ts = xseg[-2*fs:]
+        merged_ts0 = np.concatenate([end_ts, beg_ts])
+        merged_ts = merged_ts0.copy()
+        dti = int(np.round(fs/8))
+        for tt in range(dti, len(merged_ts)-dti-1):
+            merged_ts[tt] = np.mean(merged_ts0[tt-dti:tt+dti+1])
+        xseg[:2*fs] = merged_ts[-2*fs:]
+        xseg[-2*fs:] = merged_ts[:2*fs]
+        
+        # Final windowing
+        ww = windows.boxcar(nfft) 
+        normFactor = np.mean(ww**2)
+        xseg *= (ww / np.sqrt(normFactor))
+
+        # FFT of segment
+        A_loc = np.fft.fft(xseg , nfft) / nfft
+        A[:,kk] = np.concatenate([A_loc[nmid:nfft], A_loc[:nmid+1]]) # FFTshift
+        A[nmid,kk] = 0
+
+    #  ------------------- Bispectrum computation ---------------------
+    # Deal with f1 + f2 = f3 indices
+    ifr1, ifr2 = np.meshgrid(np.arange(nfft+1), np.arange(nfft+1))
+    ifr3 = nmid + (ifr1-nmid) + (ifr2-nmid) 
+    ifm3val = np.logical_and((ifr3 >= 0), (ifr3 < nfft+1))
+    ifr3[~ifm3val] = 0
+
+    # Accumulating triple products (loop over blocks)
+    for kk in range(nblock):
+        # Block kk FFT
+        A_loc  = A[:,kk]
+        CA_loc = np.conj(A[:,kk])
+        # Compute bispectrum and PSD
+        B += A_loc[ifr1] * A_loc[ifr2] * CA_loc[ifr3]
+        P += np.abs(A_loc**2)
+
+    # Expected values
+    B /= nblock
+    B[~ifm3val] = 0
+    P /= nblock
+
+    #  ------------------- Skewness and asymmetry ---------------------
+    #  Notes: 
+    #         Computation following Elgar and Guza (1985)
+    #         Observations of bispectra of shoaling surface gravity wave
+    #         Journal of Fluid Mechanics, 161, 425-448
+
+    # We work only in one frequency quadrant
+    ifreq  = np.arange(nmid, nmid+int((nfft)/2))
+    sumtmp = 6 * B[nmid, nmid] # Initialisation with first diagonal term
+
+    # Loop over frequencies 
+    for indf in ifreq[1:]:
+        # Diagonal
+        sumtmp += 6 * B[indf, indf]
+        # Non-diagonal
+        sumtmp += 12 * np.sum(B[indf, np.arange(nmid, indf)])
+
+    # Skewness & asymmetry parameters
+    Sk = np.real(sumtmp) / np.mean((x-np.mean(x))**2)**(3/2)
+    As = np.imag(sumtmp) / np.mean((x-np.mean(x))**2)**(3/2)
+    # print('Sk={}, As={}'.format(Sk, As))
+
+    # ------------------- Merging over frequencies -------------------
+    # Initialization
+    mg = int(mg - np.remainder(mg+1, 2))
+    mm = int((mg - 1) / 2) # Half-window for averaging
+    nmid = int(nfft/2) # Middle frequency (f = 0)
+    ifrm = np.concatenate([np.arange(nmid,1+mm-mg,-mg)[::-1], 
+                        np.arange(nmid+mg, nfft+1-mm, mg)]) # Frequency indices
+    Bm = np.zeros((len(ifrm), len(ifrm))).astype(complex) # Merged bispec (unit m^3)
+    Pm = np.zeros(len(ifrm)) # Merged PSD (unit m^2)
+
+    # Remove half of diagonals
+    for ff in range(len(ifreq)):
+        B[ff,ff] = 0.5 * B[ff,ff]
+
+    # Loop over frequencies
+    for jfr1 in range(len(ifrm)):
+        # Rows
+        ifb1 = ifrm[jfr1] # mid of jfr1-merge-block
+        # PSD
+        Pm[jfr1] = np.sum(P[np.arange(ifb1-mm, ifb1+mm)])
+        # Columns for bispectrum
+        for jfr2 in range(len(ifrm)):
+            ifb2 = ifrm[jfr2] # mid of jfr2-merge-block
+            Bm[jfr1,jfr2] = np.sum(np.sum(B[np.arange(ifb1-mm, ifb1+mm), 
+                                            np.arange(ifb2-mm, ifb2+mm)]))
+
+    # Updating arrays
+    freqs = freqs[ifrm]
+    df = np.abs(freqs[1]-freqs[0])
+
+    # Generate output dataset
+    if timestamp is not None:
+        data_vars={'B': (['freq', 'freq'], Bm),
+                   'PST': (['freq'], Pm),
+                   'fp': (['time'], np.atleast_1d(fp)),
+                   'kp': (['time'], np.atleast_1d(kp)),
+                   'h0': (['time'], np.atleast_1d(h0)),
+                   'mu': (['time'], np.atleast_1d(mu)),
+                   'eps': (['time'], np.atleast_1d(eps)),
+                   'Ur': (['time'], np.atleast_1d(Ur)),
+                   'Sk': (['time'], np.atleast_1d(Sk)),
+                   'As': (['time'], np.atleast_1d(As)),
+                  }
+        time = [timestamp] # time coordinate
+        # Initialize output dataset
+        dsb = xr.Dataset(data_vars=data_vars, 
+                         coords={'freq': (['freq'], freqs),
+                                 'time': (['time'], time)},
+                        )
+    else:
+        data_vars={'B': (['freq', 'freq'], Bm),
+                   'PST': (['freq'], Pm),
+                   'fp': ([], fp),
+                   'kp': ([], kp),
+                   'h0': ([], h0),
+                   'mu': ([], mu),
+                   'eps': ([], eps),
+                   'Ur': ([], Ur),
+                   'Sk': ([], Sk),
+                   'As': ([], As),
+                  }
+        time = [] # No time coord.
+        # Initialize output dataset
+        dsb = xr.Dataset(data_vars=data_vars, 
+                         coords={'freq': (['freq'], freqs),
+                                },
+                        )
+    # Save some attributes
+    dsb.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
+    dsb.freq.attrs['long_name'] = 'spectral frequencies in Hz'
+    dsb.freq.attrs['units'] = 'Hz'
+    dsb['B'].attrs['standard_name'] = 'bispectrum'
+    dsb['B'].attrs['long_name'] = 'Bispectrum following Matlab code by Kevin Martins'
+    dsb['B'].attrs['units'] = 'm^3'
+    dsb['PST'].attrs['standard_name'] = 'power_spectrum'
+    dsb['PST'].attrs['long_name'] = 'Power spectrum following Matlab code by Kevin Martins'
+    dsb['PST'].attrs['units'] = 'm^2'
+    dsb['fp'].attrs['standard_name'] = 'peak_frequency'
+    dsb['fp'].attrs['long_name'] = 'Peak wave frequency'
+    dsb['fp'].attrs['units'] = 'Hz'
+    dsb['kp'].attrs['standard_name'] = 'peak_wavenumber'
+    dsb['kp'].attrs['long_name'] = 'Peak wavenumber (linear wave theory)'
+    dsb['kp'].attrs['units'] = 'rad/m'
+    dsb['h0'].attrs['standard_name'] = 'depth'
+    dsb['h0'].attrs['long_name'] = 'Mean water depth of signal segment'
+    dsb['h0'].attrs['units'] = 'm'
+    dsb['mu'].attrs['standard_name'] = 'shallowness_parameter'
+    dsb['mu'].attrs['long_name'] = mu_info
+    dsb['mu'].attrs['units'] = 'dimensionless'
+    dsb['eps'].attrs['standard_name'] = 'nonlinearity_parameter'
+    dsb['eps'].attrs['long_name'] = eps_info
+    dsb['eps'].attrs['units'] = 'm'
+    dsb['Ur'].attrs['standard_name'] = 'ursell_parameter'
+    dsb['Ur'].attrs['long_name'] = Ur_info
+    dsb['Sk'].attrs['standard_name'] = 'wave_skewness'
+    dsb['Sk'].attrs['long_name'] = 'Skewness parameter following Elgar and Guza (1985)'
+    dsb['As'].attrs['standard_name'] = 'wave_asymmetry'
+    dsb['As'].attrs['long_name'] = 'Asymmetry parameter following Elgar and Guza (1985)'
+
+    # Some global attributes
+    dsb.attrs['nfft'] = '{} samples'.format(nfft)
+    dsb.attrs['overlap'] = '{}%'.format(overlap)
+    dsb.attrs['nblocks'] = nblock
+    dsb.attrs['fft_window'] = wind
+    dsb.attrs['merged_frequencies'] = '{} frequencies'.format(mg)
+    dsb.attrs['frequency_resolution'] = '{} Hz'.format(df)
+
+    return dsb
