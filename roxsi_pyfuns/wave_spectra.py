@@ -620,9 +620,12 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg
     mm = int((mg - 1) / 2) # Half-window for averaging
     nmid = int(nfft/2) # Middle frequency (f = 0)
     ifrm = np.concatenate([np.arange(nmid,1+mm-mg,-mg)[::-1], 
-                        np.arange(nmid+mg, nfft+1-mm, mg)]) # Frequency indices
+                           np.arange(nmid+mg, nfft+1-mm, mg)]) # Frequency indices
+    ifrm = ifrm[1:] # Lose first negative frequency (to comply with Matlab code)
     Bm = np.zeros((len(ifrm), len(ifrm))).astype(complex) # Merged bispec (unit m^3)
     Pm = np.zeros(len(ifrm)) # Merged PSD (unit m^2)
+    print('test')
+    print('ifrm: ', ifrm)
 
     # Remove half of diagonals
     for ff in range(len(ifreq)):
