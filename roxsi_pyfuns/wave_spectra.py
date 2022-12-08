@@ -422,8 +422,8 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     return ds
 
 
-def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg=5,
-               timestamp=None, return_krms=True):
+def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', 
+               mg=5, timestamp=None, return_krms=True):
     """
     Compute the bispectrum of signal x using FFT-based approach.
     Based on fun_compute_bispectrum.m by Kevin Martins.
@@ -437,15 +437,14 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg
         overlap - scalar; percentage overlap
         wind - str; Type of window for tappering (only 'rectangular'
                implemented)
-        mg - scalar; length of spectral bandwith over which 
-             to merge
+        mg - scalar; length of spectral bandwith over which to merge
         timestamp - if not None, assigns a time coordinate using
                     given value to output dataset.
         return_krms - bool; if True, compute rms wavenumbers following 
                       Herbers et al. (2000).
 
     Returns:
-        dsb - xr.Dataset with bispectral information
+        dsb - xr.Dataset with bispectral information. See code for details.
     """
     lx = len(x) # Length of input signal
     # Compute shallowness and nonlinearity parameters
