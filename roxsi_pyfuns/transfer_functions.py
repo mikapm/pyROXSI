@@ -110,6 +110,56 @@ def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
     return df['eta_hyd']
 
 
+def k_rms(h0, f, P, B):
+    """
+    Compute root-mean-square wavenumber following Herbers et al. (2000)
+    definition (Eq. 12). Function implementation based on fun_compute_rms.m
+    function by Kevin Martins.
+    
+    Parameters:
+        h0 - scalar; mean water depth
+        f - frequency array
+        P - 1D array; power spectrum [m^2]. Note: not a density
+        B - 2D array; bispectrum [m^2]. Note: not a density
+
+    Returns:
+        krms - array or RMS wavenumbers, same shape as f
+
+    Note: f, P and B arrays are two-sided in regards to f; f should 
+    be centered around 0 Hz.
+    """
+    # Initialisation
+    krms = np.ones_like(f) * np.nan
+    nmid = int(len(f) / 2) # Middle frequency (f=0)
+    g = 9.81 # Gravity
+
+    # Transforming P and B to densities
+    df = abs(f[1]-f[0])
+    P  /= df
+    B  /= df**2
+
+    # Iterate over frequencies and compute wavenumbers
+    for fi in range(len(f)):
+        # Initialisation of the cumulative sum and wavenumbers
+        sumtmp = 0 
+        krms[fi] = 2 * np.pi * f[fi] / np.sqrt(g*h0) # Linear part
+        
+        # Loop over frequencies
+        for ff in range(len(f)):
+            ifr3 = nmid + (fi-nmid) - (ff-nmid)
+            if (ifr3 >= 0) and (ifr3 < len(f)):
+                sumtmp += df * np.real(B[ff, ifr3])
+        
+        # Non-linear terms (Eqs. 19 and 20 of Martins et al., 2021)
+        Beta_fr  = h0 * (2 * np.pi * f[fi])**2 / (3*g)
+        Beta_am  = 3 * sumtmp / (2 * h0 * P[fi])
+        
+        # Non-linear wavenumber
+        krms[fi] *= np.sqrt(1 + Beta_fr - Beta_am)
+
+    return krms
+
+
 class TRF():
     """
     Pressure-to-sea surface linear transfer function (TRF) class.
