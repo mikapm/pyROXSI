@@ -423,7 +423,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
 
 
 def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg=5,
-               timestamp=None, ):
+               timestamp=None, return_krms=True):
     """
     Compute the bispectrum of signal x using FFT-based approach.
     Based on fun_compute_bispectrum.m by Kevin Martins.
@@ -441,6 +441,8 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg
              to merge
         timestamp - if not None, assigns a time coordinate using
                     given value to output dataset.
+        return_krms - bool; if True, compute rms wavenumbers following 
+                      Herbers et al. (2000).
 
     Returns:
         dsb - xr.Dataset with bispectral information
@@ -647,6 +649,8 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg
     freqs = freqs[ifrm]
     df = np.abs(freqs[1]-freqs[0])
 
+
+
     # Generate output dataset
     if timestamp is not None:
         data_vars={'B': (['freq', 'freq'], Bm),
@@ -684,6 +688,13 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', mg
                          coords={'freq': (['freq'], freqs),
                                 },
                         )
+    if return_krms:
+        # Also compute rms wavenumbers K_rms following Herbers et al. (2000)
+        krms = rptf.k_rms(h0=h0, f=freqs, P=Pm, B=Bm)
+        dsb['k_rms'] = (['freq'], krms)
+        dsb['k_rms'].attrs['standard_name'] = 'sea_surface_wave_rms_wavenumber'
+        dsb['k_rms'].attrs['long_name'] = 'Root-mean-square wavenumbers following Herbers et al. (2000)'
+        dsb['k_rms'].attrs['units'] = '1/m'
     # Save some attributes
     dsb.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
     dsb.freq.attrs['long_name'] = 'spectral frequencies in Hz'
