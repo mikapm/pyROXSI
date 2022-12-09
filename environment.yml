@@ -24,6 +24,7 @@ dependencies:
   - scikit-learn
   - scikit-image
   - nbconvert
+  - dolfyn
   - cftime
   - cf_xarray
   - astropy
