@@ -170,7 +170,7 @@ class ADV():
 
         # Read and return netcdf file if it already exists
         if os.path.isfile(self.fn_nc) and not overwrite:
-            ds = xr.open_dataset(self.fn_nc)
+            ds = xr.decode_cf(xr.open_dataset(self.fn_nc, decode_coords='all'))
             return ds
         else:
             # Read data into pandas dataframe
