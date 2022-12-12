@@ -28,5 +28,6 @@ dependencies:
   - cftime
   - cf_xarray
   - astropy
+  - eofs
   - netcdf4
   - tqdm
