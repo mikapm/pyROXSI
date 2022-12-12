@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import optimize
 from scipy.signal import hann
+from roxsi_pyfuns import wave_spectra as rpws
 
 
 def waveno_deep(omega):
@@ -67,14 +68,14 @@ def waveno_full(omega, d, k0=None, **kwargs):
 
     return k
 
-def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
+def eta_hydrostatic(pt, patm=None, rho0=1025, grav=9.81, interp=True):
     """
     Returns hydrostatic pressure head in units of meters from water
     pressure time series and atmospheric pressure time series.
 
     Parameters:
-        pt - pd.Series; time series (w/ time index) of water pressure (hPa)
-        patm - pd.Series; time series of atmospheric pressure anomaly (hPa)
+        pt - pd.Series; time series (w/ time index) of water pressure (dbar)
+        patm - pd.Series; time series of atmospheric pressure anomaly (dbar)
         rho0 - scalar; water density (kg/m^3)
         grav - scalar; gravitational acceleration (m/s^2)
         interp - bool; if True, interpolate atmospheric pressure to 
@@ -112,7 +113,7 @@ def eta_hydrostatic(pt, patm, rho0=1025, grav=9.81, interp=True):
 
 def k_rms(h0, f, P, B):
     """
-    Compute root-mean-square wavenumber following Herbers et al. (2000)
+    Compute root-mean-square wavenumber following Herbers et al. (2002)
     definition (Eq. 12). Function implementation based on fun_compute_rms.m
     function by Kevin Martins.
     
@@ -303,6 +304,91 @@ class TRF():
             return eta
 
 
+    def p2eta_krms(self, eta_hyd, h0, tail_method='hydrostatic', fc=None, 
+                   krms=None, return_nl=True):
+        """
+        Fully dispersive sea-surface reconstruction from sub-surface
+        pressure measurements. The reconstruction uses linear wave theory 
+        but with measured or predicted dominant wavenumbers kappa 
+        (e.g. kappa_rms from Herbers et al., 2002) that are provided as input.
+
+        Based on fun_pReWave_krms_complete.m function by Kevin Martins.
+        Reference: Martins et al. (2021): https://doi.org/10.1175/JPO-D-21-0061.1
+
+        Parameters:
+            eta_hyd - 1D array; hydrostatic surface elevation [m]
+            h0 - scalar; mean water depth [m]
+            dm - scalar; instrument height above seabed [m]
+            tail_method - str; one of ['hydrostatic', 'constant'], uses either
+                          hydrostatic pressure field or constant transfer 
+                          function above cutoff frequency
+            fc - scalar; cutoff frequency [Hz]
+            krms - array; root-mean-square wave number array following 
+                   Herbers et al. (2002). If None, krms if computed from input
+                   array eta_hyd (note: bispectrum estimation is slow)
+            return_nl - bool; if True, return both linear and nonlinear (nl)
+                        surface reconstructions.
+        
+        Returns:
+            eta_lin - array; linear surface reconstruction using K_rms [m]
+            if return_nl is True:
+                eta_nl - array; nonlinear surface reconstruction using K_rms [m]
+        """
+        # Sample rate, data length, Gravity
+        N = len(eta_hyd)
+        Gravity = 9.81
+        if fc is None:
+            # Estimate power spectrum
+            dss = rpws.spec_uvz(eta_hyd, fs=fs)
+            # Compute cutoff frequency from peak frequency
+            fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
+            fc = 2.5 * fp
+        
+        # Frequency array
+        freq = np.arange(0, N/2 + 1) / (N/2) * fs/2
+        ic = np.round(fc / fs * N) # index for cutoff frequency
+
+        # Compute K_rms if not given
+        if krms is None:
+            # First compute bispectrum (slow)
+            print('Calculating bispectrum ...')
+            dsb = rpws.bispectrum(eta_hyd, fs=16, h0=h0, fp=fp,
+                                  timestamp=dfe.index[0].round('20T'))
+            # Compute K_rms
+            print('Calculating K_rms ...')
+            krms = k_rms(h0=dsb.h0.item(), f=dsb.freq.values, P=dsb.PST.values, 
+                         B=dsb.B.values)
+        print('krms: {}, freq: {}'.format(len(krms), len(freq)))
+
+    # Reinterpolate k_rms to the local frequency structure
+    for ii = 1:1
+        iNaNs = find(~isnan(data(:,2)));
+        k_loc = interp1( data(iNaNs,1) , data(iNaNs,2) , Freq );
+        % checking
+        %     figure, plot( Freq , k_loc, 'k'), hold on
+        
+        % Most likely, provided wavenumbers do not cover the first frequencies
+        % Filling first wavenumbers assuming k~0 at f~0
+        iNaN = find(~isnan(k_loc),1,'first');
+        if and( ~isempty(iNaN) , iNaN > 1)
+        k_loc(1:iNaN-1) = interp1( [0 Freq(iNaN)] , [0 k_loc(iNaN)] , Freq(1:iNaN-1) );
+        end
+        %     plot( Freq , k_loc, 'r+')
+        
+        % Making sure we cover all range of values, otherwise we reduce the cutoff frequency and send a warning
+        if data(end,1) < fc
+        fc = data(end,1); ic = round(fc/fs*N)+1;
+        disp('The input data does not cover every frequencies up to the chosen cutoff frequency. Changing fc...')
+        end
+        
+        % Careful with the presence of NaNs at high frequencies
+        iNaN = find(~isnan(k_loc),1,'last');
+        if and( ~isempty(iNaN) , iNaN < ic)
+        ic = iNaN;
+        end
+  end
+
+
 
 # Test script
 if __name__ == '__main__':
@@ -322,7 +408,8 @@ if __name__ == '__main__':
         parser.add_argument("-dr", 
                 help=("Path to data root directory"),
                 type=str,
-                default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/RBRDuetDT/Level1/mat',
+                #default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/RBRDuetDT/Level1/mat',
+                default = r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray'
                 )
         parser.add_argument("-date", 
                 help=("File date (yyyymmdd)"),
@@ -360,27 +447,38 @@ if __name__ == '__main__':
     # Call args parser to create variables out of input arguments
     args = parse_args(args=sys.argv[1:])
 
-    # Load ROXSI pressure sensor time series
-    fn_mat = glob.glob(os.path.join(args.dr, 'roxsi_{}_L1_{}_*_{}.mat'.format(
-        args.sid, args.mid, args.date)))[0]
-    print('Loading pressure sensor mat file {}'.format(fn_mat))
-    mat = loadmat(fn_mat)
-    # Read pressure time series and timestamps
-    pt = np.array(mat['DUETDT']['Pwater'].item()).squeeze()
-    time_mat = np.array(mat['DUETDT']['time_dnum'].item()).squeeze()
-    # Convert timestamps
-    time_ind = pd.to_datetime(time_mat-719529,unit='d') 
-    # Read sampling frequency and sensor height above seabed
-    fs = int(mat['DUETDT']['sample_freq'].item()[0].split(' ')[0])
-    zp = mat['DUETDT']['Zbed'].item().squeeze().item()
-    # Make pandas DataFrame
-    dfp = pd.DataFrame(data={'pt':pt}, index=time_ind)
+    # Load ROXSI pressure sensor test time series
+    outdir = '/home/mikapm/Github/Martins_pressure_reconstruction/data'
+    fn_test = os.path.join(outdir, 'test_data.csv')
+    dfe = pd.read_csv(fn_test, parse_dates=['time']).set_index('time')
+    h0 = dfe['z_hyd'].mean().item()
+    eta_hyd = dfe['eta_hyd'].values.squeeze()
+
+    fs = 16
+    zp = 0.08
+
+    # fn_mat = glob.glob(os.path.join(args.dr, 'roxsi_{}_L1_{}_*_{}.mat'.format(
+    #     args.sid, args.mid, args.date)))[0]
+    # print('Loading pressure sensor mat file {}'.format(fn_mat))
+    # mat = loadmat(fn_mat)
+    # # Read pressure time series and timestamps
+    # pt = np.array(mat['DUETDT']['Pwater'].item()).squeeze()
+    # time_mat = np.array(mat['DUETDT']['time_dnum'].item()).squeeze()
+    # # Convert timestamps
+    # time_ind = pd.to_datetime(time_mat-719529,unit='d') 
+    # # Read sampling frequency and sensor height above seabed
+    # fs = int(mat['DUETDT']['sample_freq'].item()[0].split(' ')[0])
+    # zp = mat['DUETDT']['Zbed'].item().squeeze().item()
+    # # Make pandas DataFrame
+    # dfp = pd.DataFrame(data={'pt':pt}, index=time_ind)
 
     # Initialize class
     trf = TRF(fs=fs, zp=zp)
-    # Transform pressure -> eta for 20-min chunk
-    eta = trf.p2eta_lin(dfp['pt'].iloc[0:19200], M=args.M, 
-                        fmin=args.fmin, fmax=args.fmax)
+    # Transform pressure -> eta (linear) for 20-min chunk
+    eta = trf.p2eta_lin(eta_hyd, M=args.M, fmin=args.fmin, fmax=args.fmax)
+
+    # Test K_rms reconstruction
+    eta_krms = trf.p2eta_krms(eta_hyd, h0=h0)
 
     
     
