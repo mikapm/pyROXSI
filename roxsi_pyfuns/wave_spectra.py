@@ -441,7 +441,7 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
         timestamp - if not None, assigns a time coordinate using
                     given value to output dataset.
         return_krms - bool; if True, compute rms wavenumbers following 
-                      Herbers et al. (2000).
+                      Herbers et al. (2002).
 
     Returns:
         dsb - xr.Dataset with bispectral information. See code for details.
@@ -458,8 +458,6 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     eps_info = 'Nonlinear "amplitude" parameter'
     Ur = eps / mu
     Ur_info  = 'Ursell parameter'
-    print('h0={:.4f}, kp={:.4f}, mu={:.4f}, eps={:.4f}, Ur={:.4f}'.format(
-      h0, kp, mu, eps, Ur))
 
     # Nonlinear moderately dispersive reconstruction 
     if nfft is None:
@@ -469,8 +467,6 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     eadvance = int(np.fix(nfft * overlap / 100))
     nadvance = int(nfft - eadvance)
     nblock   = int(np.fix((lx-eadvance)/nadvance)+1) # +1 for not throwing away data
-    print('overlap={}, nfft={}, eadvance={}, nadvance={}, nblock={}'.format(
-        overlap, nfft, eadvance, nadvance, nblock))
     freqs = np.arange(-nfft/2, nfft/2) / nfft * fs
     df = freqs[1] - freqs[0]
 
@@ -625,8 +621,6 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     ifrm = ifrm[1:] # Lose first negative frequency (to comply with Matlab code)
     Bm = np.zeros((len(ifrm), len(ifrm))).astype(complex) # Merged bispec (unit m^3)
     Pm = np.zeros(len(ifrm)) # Merged PSD (unit m^2)
-    print('test')
-    print('ifrm: ', ifrm)
 
     # Remove half of diagonals
     for ff in range(len(ifreq)):
