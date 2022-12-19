@@ -4,11 +4,12 @@ elevation.
 """
 
 import numpy as np
-import pandas as pd
+import xarray as xr
 import matplotlib.pyplot as plt
 from scipy import optimize
 from scipy.signal import hann
 from roxsi_pyfuns import wave_spectra as rpws
+from roxsi_pyfuns import zero_crossings as rpzc
 
 
 def waveno_deep(omega):
@@ -304,8 +305,9 @@ class TRF():
             return eta
 
 
-    def p2eta_krms(self, eta_hyd, h0, tail_method='hydrostatic', fc=None, 
-                   krms=None, return_nl=True):
+    def p2eta_krms(self, eta_hyd, h0, tail_method='constant', fc=None, fc_fact=2.5,
+                   fmax=2.0, krms=None, f_krms=None, return_nl=True,
+                   fix_ends=True):
         """
         Fully dispersive sea-surface reconstruction from sub-surface
         pressure measurements. The reconstruction uses linear wave theory 
@@ -318,16 +320,23 @@ class TRF():
         Parameters:
             eta_hyd - 1D array; hydrostatic surface elevation [m]
             h0 - scalar; mean water depth [m]
-            dm - scalar; instrument height above seabed [m]
             tail_method - str; one of ['hydrostatic', 'constant'], uses either
                           hydrostatic pressure field or constant transfer 
                           function above cutoff frequency
             fc - scalar; cutoff frequency [Hz]
+            fc_fact - scalar; factor to multiply fp to get fc if fc=None
+            fmax - scalar; max. frequency for FFT
             krms - array; root-mean-square wave number array following 
                    Herbers et al. (2002). If None, krms if computed from input
                    array eta_hyd (note: bispectrum estimation is slow)
+            f_krms - array like krms; frequency array corresponding to krms.
+                     Must be given if krms is given.
             return_nl - bool; if True, return both linear and nonlinear (nl)
                         surface reconstructions.
+            fix_ends - bool; if True, sets first and last waves of (non)linear
+                       reconstructions equal to the first and last waves of the
+                       hydrostatic surface to avoid wiggles at endpoints of
+                       the (non)linear reconstructions.
         
         Returns:
             eta_lin - array; linear surface reconstruction using K_rms [m]
@@ -342,7 +351,7 @@ class TRF():
             dss = rpws.spec_uvz(eta_hyd, fs=fs)
             # Compute cutoff frequency from peak frequency
             fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
-            fc = 2.5 * fp
+            fc = fc_fact * fp
         
         # Frequency array
         freq = np.arange(0, N/2 + 1) / (N/2) * fs/2
@@ -353,41 +362,130 @@ class TRF():
             # First compute bispectrum (slow)
             print('Calculating bispectrum ...')
             dsb = rpws.bispectrum(eta_hyd, fs=16, h0=h0, fp=fp,
-                                  timestamp=dfe.index[0].round('20T'))
-            # Compute K_rms
-            print('Calculating K_rms ...')
-            krms = k_rms(h0=dsb.h0.item(), f=dsb.freq.values, P=dsb.PST.values, 
-                         B=dsb.B.values)
-        print('krms: {}, freq: {}'.format(len(krms), len(freq)))
+                                  timestamp=dfe.index[0].round('20T'), 
+                                  return_krms=True)
+            krms = dsb.k_rms.values
+            f_krms = dsb.freq.values
+        else:
+            if f_krms is None:
+                raise ValueError('Must also input f_krms')
 
-    # Reinterpolate k_rms to the local frequency structure
-    for ii = 1:1
-        iNaNs = find(~isnan(data(:,2)));
-        k_loc = interp1( data(iNaNs,1) , data(iNaNs,2) , Freq );
-        % checking
-        %     figure, plot( Freq , k_loc, 'k'), hold on
-        
-        % Most likely, provided wavenumbers do not cover the first frequencies
-        % Filling first wavenumbers assuming k~0 at f~0
-        iNaN = find(~isnan(k_loc),1,'first');
-        if and( ~isempty(iNaN) , iNaN > 1)
-        k_loc(1:iNaN-1) = interp1( [0 Freq(iNaN)] , [0 k_loc(iNaN)] , Freq(1:iNaN-1) );
-        end
-        %     plot( Freq , k_loc, 'r+')
-        
-        % Making sure we cover all range of values, otherwise we reduce the cutoff frequency and send a warning
-        if data(end,1) < fc
-        fc = data(end,1); ic = round(fc/fs*N)+1;
-        disp('The input data does not cover every frequencies up to the chosen cutoff frequency. Changing fc...')
-        end
-        
-        % Careful with the presence of NaNs at high frequencies
-        iNaN = find(~isnan(k_loc),1,'last');
-        if and( ~isempty(iNaN) , iNaN < ic)
-        ic = iNaN;
-        end
-  end
+        # Reinterpolate k_rms to the local frequency structure
+        k_loc = np.interp(freq, f_krms, krms)
 
+        # Computing FFT on input signal
+        fft_e_HY = np.fft.fft(eta_hyd)
+        # Set to zero FFT components at frequencies > fmax
+        fidx = np.argwhere(freq > fmax).squeeze()
+        fft_e_HY[fidx] = 0
+
+        # Dealing with cutoff frequency
+        ifp = np.argmax((np.abs(fft_e_HY**2)))
+        fp = freq[ifp]
+        # Index corresponding to start of smoothing around fc
+        ihw_b = round((fc - fp/4) / fs*N) 
+        # Index corresponding to end of smoothing around fc
+        ihw_e = round((fc + fp/4) / fs*N) 
+
+        # Initialisations
+        fft_d1_e = np.zeros(N).astype(complex) # 1st derivative
+        fft_d2_e = np.zeros(N).astype(complex) # 2nd derivative
+        fft_e_L  = fft_e_HY.copy()
+        fft_f_term_eqB6 = np.zeros(N).astype(complex)
+  
+        # Correction of the pressure signal
+        for i in np.arange(1, len(freq)):
+            # Different correction depending on the frequency
+            # 1 - Measured or predicted kappa (before cutoff frequency)
+            if i <= ihw_b:
+                # Getting dominant wavenumber from interpolated entry
+                kn0 = k_loc[i]
+                # Computing fft of linear reconstruction
+                fft_e_L[i] = fft_e_HY[i] * np.cosh(kn0*h0) / np.cosh(kn0*self.zp)
+            
+            # 2 - Around the cutoff frequency, we smoothly change from measured k to:
+            #     1 - k --> 0 (i.e., Kp = 1) for hydrostatic pressure field
+            #     2 - k ~ k(fc)
+            if tail_method == 'constant':
+                ktail = k_loc[ihw_e]
+            if (i > ihw_b) and (i < ihw_e):
+                if tail_method == 'hydrostatic':
+                    # Last transfer function computed
+                    Kp_b = np.cosh(kn0*h0) / np.cosh(kn0*self.zp) 
+                    Kp_e = 1 # Hydrostatic treatment
+                else:
+                    # last transfer function computed
+                    Kp_b = np.cosh(kn0*h0) / np.cosh(kn0*self.zp) 
+                    Kp_e = np.cosh(ktail*h0) / np.cosh(ktail*self.zp) # value around fc
+                # Interpolation of Kp
+                Kp_loc = np.interp(freq[i], [freq[ihw_b], freq[ihw_e]], [Kp_b, Kp_e])
+                # Computing fft of linear reconstruction
+                fft_e_L[i] = fft_e_HY[i] * Kp_loc
+            
+            # 3 - After cutoff frequency, we assume a hydrostatic pressure field
+            if i > ihw_e:
+                # Correction
+                fft_e_L[i] = fft_e_HY[i] * Kp_e # whichever last Kp_e, we use it
+            
+            # Coefficient for additional term of complete formula (Eq. B6 of JFM)
+            coef_EQB6 = np.sinh(kn0*self.zp) / np.sinh(kn0*h0)
+            
+            # Derivatives
+            fft_d1_e[i] = 1j * 2*np.pi * freq[i] * fft_e_L[i]
+            fft_d2_e[i] = -(2*np.pi * freq[i])**2 * fft_e_L[i]
+            fft_f_term_eqB6[i] = coef_EQB6 * fft_d1_e[i]
+            
+            # Conjugates
+            fft_e_L[N-i]  = np.conjugate(fft_e_L[i])
+            fft_d1_e[N-i] = np.conjugate(fft_d1_e[i])
+            fft_d2_e[N-i] = np.conjugate(fft_d2_e[i])
+            fft_f_term_eqB6[N-i] = np.conjugate(fft_f_term_eqB6[i])
+
+        # Inverse Fourier transform
+        e_L = np.real(np.fft.ifft(fft_e_L)) # Linear reconstruction
+
+        # Also return nonlinear reconstruction?
+        if return_nl:
+            d1_e = np.real(np.fft.ifft(fft_d1_e))
+            d2_e = np.real(np.fft.ifft(fft_d2_e))
+            f_term_eqB6 = np.real(np.fft.ifft(fft_f_term_eqB6))
+
+            # Now that we have the f term, we can compute the G term
+            fft_G_term_eqB6 = np.fft.fft(f_term_eqB6**2)
+            for i in np.arange(1,len(freq)):
+                # Different correction depending on the frequency
+                # 1 - Measured or predicted kappa (before cutoff frequency)
+                if i <= ihw_b:
+                    # Getting dominant wavenumber from interpolated entry
+                    kn0 = k_loc[i]
+                # Coefficient for additional term of complete formula (Eq. B6 of JFM)
+                coef_EQB6 = np.cosh(kn0*h0) / np.cosh(kn0*self.zp)
+                # Computing G term
+                fft_G_term_eqB6[i] = coef_EQB6 * fft_G_term_eqB6[i]
+                fft_G_term_eqB6[N-i] = np.conjugate(fft_G_term_eqB6[i])
+
+            G_term_eqB6 = np.real(np.fft.ifft(fft_G_term_eqB6))
+            
+            # Computation of e_NL   
+            e_NL = e_L - (1/Gravity) * (e_L*d2_e+d1_e**2) + (1/Gravity) * G_term_eqB6
+
+            # Fix start and end points?
+            if fix_ends:
+                # Get indices of first and last zero-crossings of hydrostatic eta
+                zc, _, _, _ = rpzc.get_waveheights(eta_hyd, method='down')
+                # Set first and last zero crossings of e_NL equal to eta_hyd
+                e_NL[:zc[0]] = eta_hyd[:zc[0]]
+                e_NL[zc[-1]:] = eta_hyd[zc[-1]:]
+                # Same for e_L
+                e_L[:zc[0]] = eta_hyd[:zc[0]]
+                e_L[zc[-1]:] = eta_hyd[zc[-1]:]
+
+            # Return both linear and nonlinear reconstructions
+            return e_L, e_NL
+
+        else:
+            # Only return linear reconstruction
+            return e_L
 
 
 # Test script
@@ -441,6 +539,17 @@ if __name__ == '__main__':
                 type=float,
                 default=0.33,
                 )
+        parser.add_argument("-fact", 
+                help=("Factor to multiply fp by to get fc"),
+                type=float,
+                default=2.5,
+                )
+        parser.add_argument("-tail", 
+                help=("Tail method"),
+                type=str,
+                choices=['hydrostatic', 'constant'],
+                default='hydrostatic',
+                )
 
         return parser.parse_args(**kwargs)
 
@@ -454,9 +563,57 @@ if __name__ == '__main__':
     h0 = dfe['z_hyd'].mean().item()
     eta_hyd = dfe['eta_hyd'].values.squeeze()
 
+    # Read bispectrum of eta_hyd
+    fn_bisp = os.path.join(outdir, 'bispec_test_etalin.nc')
+    dsb = xr.open_dataset(fn_bisp, engine='h5netcdf')
+    krms = dsb.k_rms.values
+    f_krms = dsb.freq.values
+
     fs = 16
     zp = 0.08
 
+    # Initialize class
+    trf = TRF(fs=fs, zp=zp)
+    # Transform pressure -> eta (linear) for 20-min chunk
+    z_lin = trf.p2eta_lin(dfe['z_hyd'].values, M=args.M,
+                          fmin=args.fmin, fmax=args.fmax)
+    eta_lin = z_lin - np.mean(z_lin)
+
+    # Test K_rms reconstruction
+    eL, eNL = trf.p2eta_krms(eta_hyd, h0=h0, krms=krms, f_krms=f_krms, 
+                             tail_method=args.tail, fc_fact=args.fact, fc=args.fmax)
+
+    # Plot time series
+    fig, ax = plt.subplots(figsize=(12,6))
+    ax.plot(eta_hyd, label=r'$\eta_\mathrm{hyd}$')
+    ax.plot(eta_lin, label=r'$\eta_\mathrm{lin}$')
+    ax.plot(eL, label=r'$\eta_\mathrm{lin}$ $(K_\mathrm{rms})$')
+    ax.plot(eNL, label=r'$\eta_\mathrm{nl}$ $(K_\mathrm{rms})$')
+    ax.set_title('Tail method: {}'.format(args.tail))
+    ax.legend()
+
+    plt.show()
+    plt.clf()
+
+    # Plot spectra
+    fig, ax = plt.subplots(figsize=(8,8))
+    dss = rpws.spec_uvz(eta_hyd, fs=16)
+    ax.loglog(dss.freq, dss.Ezz, label=r'$\eta_\mathrm{hyd}$')
+    dss = rpws.spec_uvz(eta_lin, fs=16)
+    ax.loglog(dss.freq, dss.Ezz, label=r'$\eta_\mathrm{lin}$')
+    dss = rpws.spec_uvz(eL, fs=16)
+    ax.loglog(dss.freq, dss.Ezz, label=r'$\eta_\mathrm{lin}$ $(K_\mathrm{rms})$')
+    dss = rpws.spec_uvz(eNL, fs=16)
+    ax.loglog(dss.freq, dss.Ezz, label=r'$\eta_\mathrm{nl}$ $(K_\mathrm{rms})$')
+    plt.axvline(x=args.fmax, color='gray', linestyle='--')
+    ax.set_title('Tail method: {}'.format(args.tail))
+    ax.legend()
+
+    plt.show()
+    plt.clf()
+
+
+    
     # fn_mat = glob.glob(os.path.join(args.dr, 'roxsi_{}_L1_{}_*_{}.mat'.format(
     #     args.sid, args.mid, args.date)))[0]
     # print('Loading pressure sensor mat file {}'.format(fn_mat))
@@ -471,14 +628,3 @@ if __name__ == '__main__':
     # zp = mat['DUETDT']['Zbed'].item().squeeze().item()
     # # Make pandas DataFrame
     # dfp = pd.DataFrame(data={'pt':pt}, index=time_ind)
-
-    # Initialize class
-    trf = TRF(fs=fs, zp=zp)
-    # Transform pressure -> eta (linear) for 20-min chunk
-    eta = trf.p2eta_lin(eta_hyd, M=args.M, fmin=args.fmin, fmax=args.fmax)
-
-    # Test K_rms reconstruction
-    eta_krms = trf.p2eta_krms(eta_hyd, h0=h0)
-
-    
-    
