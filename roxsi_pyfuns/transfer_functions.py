@@ -166,18 +166,16 @@ class TRF():
     """
     Pressure-to-sea surface linear transfer function (TRF) class.
     """
-    def __init__(self, fs=16, zp=0, type='RBR SoloD'):
+    def __init__(self, fs=16, zp=0):
         """
         Initialize TRF class with pressure sensor parameters.
         Parameters:
             fs - scalar; sampling frequency (Hz)
             zp - scalar; height of pt sensor from seabed (m)
-            type - str; Sensor type
         """
         self.fs = fs
         self.dt = 1 / self.fs # Sampling rate (sec)
         self.zp = zp
-        self.type = type
 
 
     def p2eta_lin(self, pp, M=512, fmin=0.05, fmax=0.33, 
