@@ -348,20 +348,20 @@ class TRF():
         Gravity = 9.81
         if fc is None:
             # Estimate power spectrum
-            dss = rpws.spec_uvz(eta_hyd, fs=fs)
+            dss = rpws.spec_uvz(eta_hyd, fs=self.fs)
             # Compute cutoff frequency from peak frequency
             fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
             fc = fc_fact * fp
         
         # Frequency array
-        freq = np.arange(0, N/2 + 1) / (N/2) * fs/2
-        ic = np.round(fc / fs * N) # index for cutoff frequency
+        freq = np.arange(0, N/2 + 1) / (N/2) * self.fs/2
+        ic = np.round(fc / self.fs * N) # index for cutoff frequency
 
         # Compute K_rms if not given
         if krms is None:
             # First compute bispectrum (slow)
             print('Calculating bispectrum ...')
-            dsb = rpws.bispectrum(eta_hyd, fs=16, h0=h0, fp=fp,
+            dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=h0, fp=fp,
                                   timestamp=dfe.index[0].round('20T'), 
                                   return_krms=True)
             krms = dsb.k_rms.values
@@ -383,9 +383,9 @@ class TRF():
         ifp = np.argmax((np.abs(fft_e_HY**2)))
         fp = freq[ifp]
         # Index corresponding to start of smoothing around fc
-        ihw_b = round((fc - fp/4) / fs*N) 
+        ihw_b = round((fc - fp/4) / self.fs*N) 
         # Index corresponding to end of smoothing around fc
-        ihw_e = round((fc + fp/4) / fs*N) 
+        ihw_e = round((fc + fp/4) / self.fs*N) 
 
         # Initialisations
         fft_d1_e = np.zeros(N).astype(complex) # 1st derivative
@@ -414,9 +414,10 @@ class TRF():
                     Kp_b = np.cosh(kn0*h0) / np.cosh(kn0*self.zp) 
                     Kp_e = 1 # Hydrostatic treatment
                 else:
-                    # last transfer function computed
+                    # Last transfer function computed
                     Kp_b = np.cosh(kn0*h0) / np.cosh(kn0*self.zp) 
-                    Kp_e = np.cosh(ktail*h0) / np.cosh(ktail*self.zp) # value around fc
+                    # Value around fc
+                    Kp_e = np.cosh(ktail*h0) / np.cosh(ktail*self.zp) 
                 # Interpolation of Kp
                 Kp_loc = np.interp(freq[i], [freq[ihw_b], freq[ihw_e]], [Kp_b, Kp_e])
                 # Computing fft of linear reconstruction
@@ -581,7 +582,7 @@ if __name__ == '__main__':
 
     # Test K_rms reconstruction
     eL, eNL = trf.p2eta_krms(eta_hyd, h0=h0, krms=krms, f_krms=f_krms, 
-                             tail_method=args.tail, fc_fact=args.fact, fc=args.fmax)
+                             tail_method=args.tail, fc_fact=args.fact,)
 
     # Plot time series
     fig, ax = plt.subplots(figsize=(12,6))
