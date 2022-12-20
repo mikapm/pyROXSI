@@ -478,9 +478,9 @@ if __name__ == '__main__':
             # Make pandas DataFrame
             if rbr.instr == 'RBRSoloD':
                 dfp = pd.DataFrame(data={'pressure':pt,
-                                        'z_hyd':ph,
-                                        'z_lin':np.ones_like(pt)*np.nan,
-                                        'patm':dfpa['dbar'].values,
+                                         'z_hyd':ph,
+                                         'z_lin':np.ones_like(pt)*np.nan,
+                                         'patm':dfpa['dbar'].values,
                                         }, 
                                 index=time_ind)
 
@@ -488,10 +488,10 @@ if __name__ == '__main__':
                 # Also save temperature from Duets
                 temp = np.array(mat[rbr.matkey]['Twater'].item()).squeeze()
                 dfp = pd.DataFrame(data={'pressure':pt,
-                                        'temperature':temp,
-                                        'z_hyd':ph,
-                                        'z_lin':np.ones_like(pt)*np.nan,
-                                        'patm':dfpa['dbar'].values,
+                                         'temperature':temp,
+                                         'z_hyd':ph,
+                                         'z_lin':np.ones_like(pt)*np.nan,
+                                         'patm':dfpa['dbar'].values,
                                         }, 
                                 index=time_ind)
 
