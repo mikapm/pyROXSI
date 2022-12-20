@@ -231,10 +231,8 @@ class ADCP():
         # Read and convert general (velocity) time array
         time_mat, time_arr = self.read_mat_times(mat=mat)
         # Convert time array to numerical format
-        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(
-            ref_date)
-        time_vals = date2num(time_arr, time_units, 
-                             calendar='standard', 
+        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
+        time_vals = date2num(time_arr, time_units, calendar='standard', 
                              has_year_zero=True)
 
         # Read heading, pitch & roll timeseries
@@ -281,10 +279,6 @@ class ADCP():
         beam_arr_i = np.array([-vb1, -vb3, -vb4, -vb2, -vb5i])
         enu_vel_i = rpct.beam2enu(beam_arr_i, heading=heading, 
                                   pitch=pitch, roll=roll)
-        # Do the same w/ non-interpolated (ni) vertical beam vel.
-        beam_arr_ni = np.array([-vb1, -vb3, -vb4, -vb2, -vb5])
-        enu_vel_ni = rpct.beam2enu(beam_arr_ni, heading=heading, 
-                                    pitch=pitch, roll=roll)
 
         # Nortek E,N,U velocities
         vE = mat['Data']['Burst_VelEast'].item().squeeze()
@@ -305,16 +299,11 @@ class ADCP():
                                     'vN': (['time', 'z'], vN),
                                     'vU1': (['time', 'z'], vU1), 
                                     'vU2': (['time', 'z'], vU2),
-                                    # ENU from HPR (interpolated)
+                                    # ENU from HPR
                                     'vEc': (['time', 'z'], enu_vel_i[0,:,:]), 
                                     'vNc': (['time', 'z'], enu_vel_i[1,:,:]),
                                     'vU1c': (['time', 'z'], enu_vel_i[2,:,:]), 
                                     'vU2c': (['time', 'z'], enu_vel_i[3,:,:]),
-                                    # ENU from HPR (non-interpolated)
-                                    'vEni': (['time', 'z'], enu_vel_ni[0,:,:]), 
-                                    'vNni': (['time', 'z'], enu_vel_ni[1,:,:]),
-                                    'vU1ni': (['time', 'z'], enu_vel_ni[2,:,:]), 
-                                    'vU2ni': (['time', 'z'], enu_vel_ni[3,:,:]),
                                     # H, P, R
                                     'H': (['time'], heading), 
                                     'P': (['time'], pitch), 
@@ -349,9 +338,6 @@ class ADCP():
         # Save test dataset
         fn_test = os.path.join(outdir, 'enu_test.nc')
         dst.to_netcdf(fn_test, encoding=encoding)
-
-        raise ValueError('Test stop.')
-
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
@@ -396,26 +382,39 @@ class ADCP():
         df_ast = dai.to_dataframe(name='raw')
         # Despike AST signal if requested
         if despike_ast:
-            # Add despiked column
-            df_ast['des'] = np.ones_like(dai.values) * np.nan
-            # Add column for raw signal minus 20-min mean level
-            df_ast['rdm'] = np.ones_like(dai.values) * np.nan
-            # Count number of full 20-minute (1200-sec) segments
-            t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
-            t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
-            nseg = np.round((t1s - t0s).total_seconds() / 1200)
-            # Iterate over approx. 20-min long segments
-            for sn, seg in enumerate(np.array_split(dai.to_series(), nseg)):
-                # Get segment start and end times
-                t0ss = seg.index[0]
-                t1ss = seg.index[-1]
-                print('Despike AST seg: {} - {}'.format(t0ss, t1ss))
-                # Despike segment using GP method
-                seg_d, mask_d = self.despike_GP(seg, 
-                                                print_kernel=False,
-                                               )
-                # Save despiked segment to correct indices in df_ast
-                df_ast['des'].loc[t0ss:t1ss] = seg_d
+            # Check if despiked AST array already saved
+            astdir = os.path.join(self.outdir, 'AST_despiked')
+            if not os.path.isdir(astdir):
+                os.mkdir(astdir)
+            fn_base = os.path.basename(fn_mat).split('.')[0]
+            fn_ast_desp = os.path.join(astdir, '{}.csv'.format(fn_base))
+            if os.path.isfile(fn_ast_desp):
+                # Read existing dataframe from csv
+                df_ast = pd.read_csv(fn_ast_desp, 
+                                     parse_dates=['time']).set_index('time')
+            else:
+                # Add despiked column
+                df_ast['des'] = np.ones_like(dai.values) * np.nan
+                # Add column for raw signal minus 20-min mean level
+                df_ast['rdm'] = np.ones_like(dai.values) * np.nan
+                # Count number of full 20-minute (1200-sec) segments
+                t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
+                t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
+                nseg = np.round((t1s - t0s).total_seconds() / 1200)
+                # Iterate over approx. 20-min long segments
+                for sn, seg in enumerate(np.array_split(dai.to_series(), nseg)):
+                    # Get segment start and end times
+                    t0ss = seg.index[0]
+                    t1ss = seg.index[-1]
+                    print('Despike AST seg: {} - {}'.format(t0ss, t1ss))
+                    # Despike segment using GP method
+                    seg_d, mask_d = self.despike_GP(seg, 
+                                                    print_kernel=False,
+                                                )
+                    # Save despiked segment to correct indices in df_ast
+                    df_ast['des'].loc[t0ss:t1ss] = seg_d
+                # Save dataframe to csv
+                df_ast.to_csv(fn_ast_desp)
 
         # Despike (beam) velocities?
         if despike_vel:
@@ -484,8 +483,28 @@ class ADCP():
         # Make pd.Series and convert to eta
         pres = pd.Series(pres, index=time_arr)
         dfp = self.p2eta_lin(pres)
+        # Also reconstruct surface with linear+nonlinear method described in
+        # Martins et al. (2021). Requires rms wavenumbers and bispectrum.
+        dfp['eta_lin_krms'] = np.ones_like(dfp['eta_lin'].values) * np.nan
+        dfp['eta_nl_krms'] = np.ones_like(dfp['eta_lin'].values) * np.nan
+        # Count number of full 20-minute (1200-sec) segments
+        t0s = pd.Timestamp(dfp.index[0]) # Start timestamp
+        t1s = pd.Timestamp(dfp.index[-1]) # End timestamp
+        nseg = np.round((t1s - t0s).total_seconds() / 1200)
+        # Iterate over approx. 20-min long segments
+        for sn, seg in enumerate(np.array_split(dfp['eta_lin'], nseg)):
+            # Get segment start and end times
+            t0ss = pd.Timestamp(seg.index[0])
+            t1ss = pd.Timestamp(seg.index[-1])
+            # Estimate bispectrum of linear surface for segment
+            print('Calculating bispectrum ...')
+            dsbs = rpws.bispectrum(seg, fs=self.fs, h0=h0, 
+                                   timestamp=t0ss.round('20T'))
+            # Save despiked segment to correct indices in df_ast
+            df_ast['des'].loc[t0ss:t1ss] = seg_d
 
-        # Also read temperature
+
+        # Also read temperature time series
         temp = mat['Data']['Burst_Temperature'].item().squeeze()
 
         # Define variable dictionary for output dataset
@@ -518,11 +537,11 @@ class ADCP():
             data_vars['ASTd'] = (['time'], df_ast['des'].values)
         if despike_vel:
             # Despiked beam velocities
-            data_vars['vB1d'] = (['time', 'range'], dfb['vb1d'].values)
-            data_vars['vB2d'] = (['time', 'range'], dfb['vb2d'].values)
-            data_vars['vB3d'] = (['time', 'range'], dfb['vb3d'].values)
-            data_vars['vB4d'] = (['time', 'range'], dfb['vb4d'].values)
-            data_vars['vB5d'] = (['time', 'range'], dfb['vb5d'].values)
+            data_vars['vB1d'] = (['time', 'range'], dsb['vb1d'].values)
+            data_vars['vB2d'] = (['time', 'range'], dsb['vb2d'].values)
+            data_vars['vB3d'] = (['time', 'range'], dsb['vb3d'].values)
+            data_vars['vB4d'] = (['time', 'range'], dsb['vb4d'].values)
+            data_vars['vB5d'] = (['time', 'range'], dsb['vb5d'].values)
 #             data_vars['vEd'] = (['time', 'range'], dsb['vEd'].values)
 #             data_vars['vNd'] = (['time', 'range'], dsb['vNd'].values)
 #             data_vars['vU1d'] = (['time', 'range'], dsb['vU1d'].values)
@@ -795,6 +814,54 @@ class ADCP():
         # Return dataframe
         return pw
 
+
+    def p2eta_krms(self, ph, h0, detrend_out=True, krms=None, f_krms=None, 
+                   fn_bisp=None, **kwargs):
+        """
+        Transform pressure measurements to surface elevation using the 
+        weakly dispersive theory presented in Martins et al. (2021). Uses
+        root-mean-square wavenumbers K_rms following Herbers et al. (2002)
+        and returns linear and nonlinear surface reconstructions.
+
+        Parameters:
+            ph - pd.Series; time series of hydrostatic surface elevation [m]
+            h0 - scalar; mean water depth [m]
+            detrend_out - bool; if True, returns detrended signal
+            krms - array; root-mean-square wave number array following 
+                   Herbers et al. (2002). If None, krms if computed from input
+                   array eta_hyd (note: bispectrum estimation is slow)
+            f_krms - array like krms; frequency array corresponding to krms.
+                     Must be given if krms is given.
+            fn_bisp - str; path to pre-saved bispectrum netcdf file
+            **kwargs for roxsi_pyfuns.transfer_functions.TRF.p2eta_krms()
+        """
+        # Copy input
+        eh = ph.copy()
+        eh = eh.to_frame(name='eta_hyd') # Convert to dataframe
+
+        # Check if bispectrum already saved
+        if fn_bisp is not None:
+            # Read bispectrum file
+            dsb = xr.open_dataset(fn_bisp, engine='h5netcdf')
+            # Read krms and f_krms arrays from dsb
+            krms = dsb.k_rms.values
+            f_krms = dsb.freq.values
+
+        # Apply linear transfer function from p->eta
+        trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+        eL, eNL = trf.p2eta_lin(eh['eta_hyd'].values, h0=h0, krms=krms, 
+                                f_krms=f_krms)
+        # Save reconstructed surfaces to output dataframe
+        eh['eta_lin_krms'] = eL
+        eh['eta_nl_krms'] = eNL
+        # Detrend if requested
+        if detrend_out:
+            eh['eta_lin_krms'] = detrend(eh['eta_lin_krms'].values)
+            eh['eta_nl_krms'] = detrend(eh['eta_nl_krms'].values)
+
+        # Return dataframe
+        return eh
+
         
     def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200, 
                  fmin=0.05, fmax=0.33):
@@ -866,7 +933,7 @@ class ADCP():
             dss = rpws.spec_uvz(z=seg, 
                                 u=vEd, 
                                 v=vNd, 
-                                fs=adcp.fs,
+                                fs=self.fs,
                                 timestamp=pd.Timestamp(t0ss).round('20T'),
                                 fmin=fmin,
                                 fmax=fmax,
@@ -1332,7 +1399,7 @@ if __name__ == '__main__':
             os.mkdir(figdir)
         # Initialize class
         adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, patm=dfa,
-                    bathy=dsb)
+                    bathy=dsb, outdir=outdir)
         # Loop over raw .mat files and get HPR
         for i,fn_mat in tqdm(enumerate(adcp.fns)):
             # Define figure filename
@@ -1380,7 +1447,8 @@ if __name__ == '__main__':
             print('Making output figure dir. {}'.format(figdir))
             os.mkdir(figdir)
         # Initialize class
-        adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo)
+        adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, 
+                    outdir=outdir)
         # Save all datasets for the same date in list for concatenating
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
