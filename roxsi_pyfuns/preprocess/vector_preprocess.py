@@ -267,7 +267,7 @@ class ADV():
                     
                     # If requested, transform pressure to sea-surface elevation
                     if p2eta:
-                        burst['eta_lin'], burst['eta_hyd'] = self.p2eta_lin(
+                        burst['eta_lin'], burst['z_hyd'] = self.p2eta_lin(
                             burst['pressure'], detrend_out=True, return_hyd=True)
 
                     # Save burst df to list for merging
@@ -417,17 +417,17 @@ class ADV():
         pw = pt.copy()
         pw = pw.to_frame(name='pressure') # Convert to dataframe
         # Use hydrostatic assumption to get pressure head with unit [m]
-        pw['eta_hyd'] = rptf.eta_hydrostatic(pw['pressure'], self.patm, 
+        pw['z_hyd'] = rptf.z_hydrostatic(pw['pressure'], self.patm, 
             rho0=rho0, grav=grav, interp=True)
         # Check if hydrostatic pressure is ever above 0
-        if pw['eta_hyd'].max() == 0.0:
+        if pw['z_hyd'].max() == 0.0:
             print('Instrument most likely not in water')
             # Return NaN array for linear sea surface elevations
-            pw['eta_lin'] = np.ones_like(pw['eta_hyd'].values) * np.nan
+            pw['eta_lin'] = np.ones_like(pw['z_hyd'].values) * np.nan
         else:
             # Apply linear transfer function from p->eta
             trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
-            pw['eta_lin'] = trf.p2eta_lin(pw['eta_hyd'], M=M, fmin=fmin, fmax=fmax,
+            pw['eta_lin'] = trf.p2eta_lin(pw['z_hyd'], M=M, fmin=fmin, fmax=fmax,
                 att_corr=att_corr)
             # Detrend if requested
             if detrend_out:
@@ -435,7 +435,7 @@ class ADV():
 
         if return_hyd:
             # Return also hydrostatic pressure head
-            return pw['eta_lin'], pw['eta_hyd']
+            return pw['eta_lin'], pw['z_hyd']
         else:
             return pw['eta_lin']
     
@@ -495,7 +495,7 @@ class ADV():
                        'uyd': (['time'], df['v_desp']),
                        'uzd': (['time'], df['w_desp']),
                        'pressure':  (['time'], df['pressure']),
-                       'eta_hyd':  (['time'], df['eta_hyd']),
+                       'z_hyd':  (['time'], df['z_hyd']),
                        'eta_lin':  (['time'], df['eta_lin']),
                        'heading_ang':  (['time'], df['heading']),
                        'pitch_ang':  (['time'], df['pitch']),
@@ -516,7 +516,7 @@ class ADV():
         ds.pitch_ang.attrs['units'] = 'degrees'
         ds.roll_ang.attrs['units'] = 'degrees'
         ds.pressure.attrs['units'] = 'hPa'
-        ds.eta_hyd.attrs['units'] = 'm'
+        ds.z_hyd.attrs['units'] = 'm'
         ds.eta_lin.attrs['units'] = 'm'
         ds.time.encoding['units'] = time_units
         ds.time.attrs['units'] = time_units
@@ -544,7 +544,7 @@ class ADV():
         ds.pitch_ang.attrs['standard_name'] = 'platform_pitch_angle'
         ds.roll_ang.attrs['standard_name'] = 'platform_roll_angle'
         ds.pressure.attrs['standard_name'] = 'sea_water_pressure_due_to_sea_water'
-        ds.eta_hyd.attrs['standard_name'] = 'depth'
+        ds.z_hyd.attrs['standard_name'] = 'depth'
         ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         # Long names of velocity components
         ln_ux = 'x component of raw velocity in instrument reference frame'
@@ -571,7 +571,7 @@ class ADV():
         ln_pres = ('Hydrostatic pressure recorded by instrument')
         ds.pressure.attrs['long_name'] = ln_pres
         ln_eh = ('Pressure head converted from hydrostatic pressure')
-        ds.eta_hyd.attrs['long_name'] = ln_eh
+        ds.z_hyd.attrs['long_name'] = ln_eh
         ln_el = ('Detrended sea-surface elevation reconstructed from ' + 
                  'hydrostatic pressure using linear transfer function')
         ds.eta_lin.attrs['long_name'] = ln_el
@@ -586,7 +586,7 @@ class ADV():
         ds.pitch_ang.attrs['missing_value'] = fillvalue
         ds.roll_ang.attrs['missing_value'] = fillvalue
         ds.pressure.attrs['missing_value'] = fillvalue
-        ds.eta_hyd.attrs['missing_value'] = fillvalue
+        ds.z_hyd.attrs['missing_value'] = fillvalue
         ds.eta_lin.attrs['missing_value'] = fillvalue
         
         # Global attributes
@@ -692,7 +692,7 @@ class ADV():
                     'pitch_ang': {'_FillValue': fillvalue},        
                     'roll_ang': {'_FillValue': fillvalue},        
                     'pressure': {'_FillValue': fillvalue},
-                    'eta_hyd': {'_FillValue': fillvalue},
+                    'z_hyd': {'_FillValue': fillvalue},
                     'eta_lin': {'_FillValue': fillvalue},
                    }     
 
