@@ -69,7 +69,7 @@ def waveno_full(omega, d, k0=None, **kwargs):
 
     return k
 
-def eta_hydrostatic(pt, patm=None, rho0=1025, grav=9.81, interp=True):
+def z_hydrostatic(pt, patm=None, rho0=1025, grav=9.81, interp=True):
     """
     Returns hydrostatic pressure head in units of meters from water
     pressure time series and atmospheric pressure time series.
@@ -96,20 +96,20 @@ def eta_hydrostatic(pt, patm=None, rho0=1025, grav=9.81, interp=True):
         # Concatenate input arrays
         df = pd.concat([pw, dfa], axis=1)
         # Correct for atmospheric pressure anomaly
-        df['eta_hyd'] = df['pressure'] - df['hpa_anom']
+        df['z_hyd'] = df['pressure'] - df['dbar_anom']
     else:
         # Do not correct for atmospheric pressure
         df = pw.copy()
-        df['eta_hyd'] = df['pressure'].copy()
+        df['z_hyd'] = df['pressure'].copy()
 
-    # Convert from hPa to meters (pressure head)
-    factor = rho0*grav/10000.0
+    # Convert from dbar to meters (pressure head)
+    factor = rho0 * grav / 10000.0
     # Remove negative values
-    ii = np.where(df['eta_hyd']<0)[0]
-    df['eta_hyd'][ii] = 0
-    df['eta_hyd'] /= factor # Pressure head, unit [m]
+    ii = np.where(df['z_hyd']<0)[0]
+    df['z_hyd'][ii] = 0
+    df['z_hyd'] /= factor # Pressure head, unit [m]
 
-    return df['eta_hyd']
+    return df['z_hyd']
 
 
 def k_rms(h0, f, P, B):
