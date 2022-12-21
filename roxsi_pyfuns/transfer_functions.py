@@ -178,11 +178,10 @@ class TRF():
         self.zp = zp
 
 
-    def p2eta_lin(self, pp, M=512, fmin=0.05, fmax=0.33, 
-                  att_corr=True, max_att_corr=5, return_kp=False):
+    def p2z_lin(self, pp, M=512, fmin=0.05, fmax=0.33, 
+                att_corr=True, max_att_corr=5, return_kp=False):
         """
-        Linear transfer function from water pressure to sea-surface 
-        elevation eta.
+        Linear transfer function from water pressure to linear depth.
 
         Based on the pr_corr.m Matlab function written by Urs Neumeier
         (http://neumeier.perso.ch/matlab/waves.html).
@@ -198,7 +197,7 @@ class TRF():
             return_kp - bool; set to True to also return the transfer
                         function Kp and wavenumbers ks
         Returns:
-            eta - np.array; linear sea surface elevation time series
+            z - np.array; linear depth time series [m]
         """
         
         pt = pp.copy() # Copy p array so we don't change the input
@@ -225,7 +224,7 @@ class TRF():
         oms = freqs * np.pi*2 # Radian frequencies
 
         # Allocate output array and define overlapping window (Hann)
-        eta = np.zeros(N)
+        z = np.zeros(N)
         win = hann(M)
         win[M//2:] = 1 - win[:M//2]
 
@@ -286,24 +285,24 @@ class TRF():
             eta_seg += np.polyval(trend, x)
 
             # Apply overlapping window
-            eta[ss:se] += eta_seg * win[:seglen]
+            z[ss:se] += eta_seg * win[:seglen]
             # Make sure first and last segments are correct
             if ss == 0:
                 se_n = int(min(N_ol, seglen)) # Updated segment end index
-                eta[:se_n] = eta_seg[:se_n]
+                z[:se_n] = eta_seg[:se_n]
             if ss + M >= N and seglen > N_ol:
-                eta[ss+N_ol:se] = eta_seg[N_ol:]
+                z[ss+N_ol:se] = eta_seg[N_ol:]
         
         # Reshape output array
-        eta = eta[:m]
+        z = z[:m]
 
         if return_kp:
-            return eta, Kp, ks
+            return z, Kp, ks
         else:
-            return eta
+            return z
 
 
-    def p2eta_krms(self, eta_hyd, h0, tail_method='constant', fc=None, fc_fact=2.5,
+    def p2eta_krms(self, z_hyd, h0, tail_method='constant', fc=None, fc_fact=2.5,
                    fmax=2.0, krms=None, f_krms=None, return_nl=True,
                    fix_ends=True):
         """
@@ -316,7 +315,7 @@ class TRF():
         Reference: Martins et al. (2021): https://doi.org/10.1175/JPO-D-21-0061.1
 
         Parameters:
-            eta_hyd - 1D array; hydrostatic surface elevation [m]
+            z_hyd - 1D array; hydrostatic pressure head [m]
             h0 - scalar; mean water depth [m]
             tail_method - str; one of ['hydrostatic', 'constant'], uses either
                           hydrostatic pressure field or constant transfer 
@@ -341,6 +340,9 @@ class TRF():
             if return_nl is True:
                 eta_nl - array; nonlinear surface reconstruction using K_rms [m]
         """
+        # Convert input depth to surface elevation
+        eta_hyd = z_hyd - np.mean(z_hyd)
+
         # Sample rate, data length, Gravity
         N = len(eta_hyd)
         Gravity = 9.81
