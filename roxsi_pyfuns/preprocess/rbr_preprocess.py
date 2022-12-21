@@ -482,7 +482,7 @@ if __name__ == '__main__':
                                          'z_lin':np.ones_like(pt)*np.nan,
                                          'patm':dfpa['dbar'].values,
                                         }, 
-                                index=time_ind)
+                                   index=time_ind)
 
             elif rbr.instr == 'RBRDuetDT':
                 # Also save temperature from Duets
@@ -493,7 +493,7 @@ if __name__ == '__main__':
                                          'z_lin':np.ones_like(pt)*np.nan,
                                          'patm':dfpa['dbar'].values,
                                         }, 
-                                index=time_ind)
+                                   index=time_ind)
 
             # Crop timeseries at last full 20-min. segment
             if fi == (len(rbr.fns) - 1):
