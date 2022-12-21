@@ -100,7 +100,7 @@ class RBR():
             'roxsi_*_{:06d}_*.mat'.format(int(self.ser)))))
 
 
-    def p2eta_hyd(self, p, rho0=1025, grav=9.81):
+    def p2z_hyd(self, p, rho0=1025, grav=9.81):
         """
         Convert pressure measurements to hydrostatic depth with
         units of m.
@@ -111,18 +111,18 @@ class RBR():
             grav - scalar; gravitational acceleration (m/s^2)
         """
         # Use hydrostatic assumption to get pressure head with unit [m]
-        eta_hyd = rptf.eta_hydrostatic(p, self.patm, rho0=rho0, 
-                                       grav=grav, interp=True)
+        z_hyd = rptf.z_hydrostatic(p, self.patm, rho0=rho0, 
+                                   grav=grav, interp=True)
         # Check if hydrostatic pressure is ever above 0
-        if eta_hyd.max() == 0.0:
+        if z_hyd.max() == 0.0:
             print('Instrument most likely not in water')
             # Return NaN array for linear sea surface elevations
-            eta_hyd = np.ones_like(p) * np.nan
+            z_hyd = np.ones_like(p) * np.nan
 
-        return eta_hyd
+        return z_hyd
 
 
-    def p2eta_lin(self, eta_hyd, M=512*8, fmin=0.05, fmax=0.33, 
+    def p2z_lin(self, z_hyd, M=512*8, fmin=0.05, fmax=0.33, 
                   att_corr=True):
         """
         Convert hydrostatic depth (m) to sea-surface elevation
@@ -131,7 +131,7 @@ class RBR():
         # Initialize TRF class
         trf = rptf.TRF(fs=self.fs, zp=self.zp)
         # Apply linear transfer function
-        eta = trf.p2eta_lin(eta_hyd, M=M, fmin=fmin, fmax=fmax,
+        eta = trf.p2z_lin(z_hyd, M=M, fmin=fmin, fmax=fmax,
                             att_corr=att_corr,)
         return eta
 
@@ -516,8 +516,8 @@ if __name__ == '__main__':
                 # Get segment start and end times
                 t0ss = seg.index[0]
                 t1ss = seg.index[-1]
-                # Convert hydrostatic depth to eta w/ linear TRF
-                dfp['z_lin'].loc[t0ss:t1ss] = rbr.p2eta_lin(
+                # Convert hydrostatic depth to linear depth w/ linear TRF
+                dfp['z_lin'].loc[t0ss:t1ss] = rbr.p2z_lin(
                     seg.interpolate(method='ffill').interpolate(method='bfill').values,
                     M=args.M, fmin=args.fmin, fmax=args.fmax)
                 # Compute spectra
