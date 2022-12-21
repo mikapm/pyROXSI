@@ -387,7 +387,7 @@ class ADCP():
             if not os.path.isdir(astdir):
                 os.mkdir(astdir)
             fn_base = os.path.basename(fn_mat).split('.')[0]
-            fn_ast_desp = os.path.join(astdir, '{}.csv'.format(fn_base))
+            fn_ast_desp = os.path.join(astdir, '{}_ASTd.csv'.format(fn_base))
             if os.path.isfile(fn_ast_desp):
                 # Read existing dataframe from csv
                 df_ast = pd.read_csv(fn_ast_desp, 
@@ -418,62 +418,72 @@ class ADCP():
 
         # Despike (beam) velocities?
         if despike_vel:
-            print('Despiking beam velocities ...')
-            # Initialize arrays
-            vb1d = np.ones_like(vb1) * np.nan
-            vb2d = np.ones_like(vb2) * np.nan
-            vb3d = np.ones_like(vb3) * np.nan
-            vb4d = np.ones_like(vb4) * np.nan
-            vb5d = np.ones_like(vb5) * np.nan
-            # Save despiked velocities in dsb Dataset
-            dsb = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
-                                        'vb2': (['time', 'z'], vb2),
-                                        'vb3': (['time', 'z'], vb3), 
-                                        'vb4': (['time', 'z'], vb4),
-                                        'vb5': (['time', 'z'], vb5),
-                                        'vb1d': (['time', 'z'], vb1d), 
-                                        'vb2d': (['time', 'z'], vb2d),
-                                        'vb3d': (['time', 'z'], vb3d), 
-                                        'vb4d': (['time', 'z'], vb4d),
-                                        'vb5d': (['time', 'z'], vb5d),
+            # First check if despiked velocities already saved
+            dir_vel_desp = os.path.join(self.outdir, 'vel_despiked')
+            if not os.path.isdir(dir_vel_desp):
+                os.mkdir(dir_vel_desp)
+            fn_base = os.path.basename(fn_mat).split('.')[0]
+            fn_vel_desp = os.path.join(dir_vel_desp, '{}_VELd.csv'.format(fn_base))
+            if not os.path.isfile(fn_vel_desp):
+                print('Despiking beam velocities ...')
+                # Initialize arrays
+                vb1d = np.ones_like(vb1) * np.nan
+                vb2d = np.ones_like(vb2) * np.nan
+                vb3d = np.ones_like(vb3) * np.nan
+                vb4d = np.ones_like(vb4) * np.nan
+                vb5d = np.ones_like(vb5) * np.nan
+                # Save despiked velocities in dsb Dataset
+                dsb = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
+                                            'vb2': (['time', 'z'], vb2),
+                                            'vb3': (['time', 'z'], vb3), 
+                                            'vb4': (['time', 'z'], vb4),
+                                            'vb5': (['time', 'z'], vb5),
+                                            'vb1d': (['time', 'z'], vb1d), 
+                                            'vb2d': (['time', 'z'], vb2d),
+                                            'vb3d': (['time', 'z'], vb3d), 
+                                            'vb4d': (['time', 'z'], vb4d),
+                                            'vb5d': (['time', 'z'], vb5d),
+                                            },
+                                coords={'time': (['time'], time_arr),
+                                        'z': (['z'], np.arange(28))
                                         },
-                            coords={'time': (['time'], time_arr),
-                                    'z': (['z'], np.arange(28))
-                                    },
-                            )
-            # Despike each beam at a time
-            cols_r = ['vb1', 'vb2', 'vb3', 'vb4', 'vb5']
-            cols_d = ['vb1d', 'vb2d', 'vb3d', 'vb4d', 'vb5d']
-            for colr, cold in zip(cols_r, cols_d):
-                # Despike each vertical cell at a time
-                for j, zr in tqdm(enumerate(zhab)):
-                    # Despike in 20-min bursts
-                    dfi = pd.DataFrame(data={'raw':dsb[colr][:,j].values.copy(),
-                                             'des':np.ones_like(dsb[cold][:,j].values)*np.nan,
-                                            }, 
-                                       index=time_arr)
-                    # Number of 20-min segments
-                    nseg = (pd.Timestamp(dsb.time[-1].values) - 
-                            pd.Timestamp(dsb.time[0].values)).total_seconds() / 1200
-                    # Iterate over segments and despike
-                    for sn, seg in enumerate(np.array_split(dfi['raw'], np.round(nseg))):
-                        # Get segment start and end times
-                        t0ss = seg.index[0]
-                        t1ss = seg.index[-1]
-                        # Only despike if range reading below min AST measurement
-                        if despike_ast:
-                            # Use despiked AST signal if available
-                            ast_min = df_ast['des'].loc[t0ss:t1ss].min()
-                        else:
-                            ast_min = df_ast['raw'].loc[t0ss:t1ss].min()
-                        # Subtract half of a binsize from ast_min (b/c
-                        # range values are in middles of bins)
-                        ast_min -= binsz / 2
-                        if zr < ast_min:
-                            dfi['des'].loc[t0ss:t1ss] = self.despike_GN02(
-                                seg.values.squeeze())
-                    # Save despiked segment in correct slice of dataframe
-                    dsb[cold][:,j] = dfi['des'].values
+                                )
+                # Despike each beam at a time
+                cols_r = ['vb1', 'vb2', 'vb3', 'vb4', 'vb5']
+                cols_d = ['vb1d', 'vb2d', 'vb3d', 'vb4d', 'vb5d']
+                for colr, cold in zip(cols_r, cols_d):
+                    # Despike each vertical cell at a time
+                    for j, zr in tqdm(enumerate(zhab)):
+                        # Despike in 20-min bursts
+                        dfi = pd.DataFrame(data={'raw':dsb[colr][:,j].values.copy(),
+                                                'des':np.ones_like(dsb[cold][:,j].values)*np.nan,
+                                                }, 
+                                        index=time_arr)
+                        # Number of 20-min segments
+                        nseg = (pd.Timestamp(dsb.time[-1].values) - 
+                                pd.Timestamp(dsb.time[0].values)).total_seconds() / 1200
+                        # Iterate over segments and despike
+                        for sn, seg in enumerate(np.array_split(dfi['raw'], np.round(nseg))):
+                            # Get segment start and end times
+                            t0ss = seg.index[0]
+                            t1ss = seg.index[-1]
+                            # Only despike if range reading below min AST measurement
+                            if despike_ast:
+                                # Use despiked AST signal if available
+                                ast_min = df_ast['des'].loc[t0ss:t1ss].min()
+                            else:
+                                ast_min = df_ast['raw'].loc[t0ss:t1ss].min()
+                            # Subtract half of a binsize from ast_min (b/c
+                            # range values are in middles of bins)
+                            ast_min -= binsz / 2
+                            if zr < ast_min:
+                                dfi['des'].loc[t0ss:t1ss] = self.despike_GN02(
+                                    seg.values.squeeze())
+                        # Save despiked segment in correct slice of dataframe
+                        dsb[cold][:,j] = dfi['des'].values
+            else:
+                # Read pre-saved despiked velocity netcdf file
+                dsb = xr.open_dataset(fn_vel_desp)
         
         # Convert despiked beam velocities to E,N,U coordinates
 
@@ -795,7 +805,7 @@ class ADCP():
         pw = pt.copy()
         pw = pw.to_frame(name='pressure') # Convert to dataframe
         # Use hydrostatic assumption to get pressure head with unit [m]
-        pw['eta_hyd'] = rptf.eta_hydrostatic(pw['pressure'], self.patm, 
+        pw['eta_hyd'] = rptf.z_hydrostatic(pw['pressure'], self.patm, 
             rho0=rho0, grav=grav, interp=True)
         # Check if hydrostatic pressure is ever above 0
         if pw['eta_hyd'].max() == 0.0:
@@ -834,10 +844,13 @@ class ADCP():
                      Must be given if krms is given.
             fn_bisp - str; path to pre-saved bispectrum netcdf file
             **kwargs for roxsi_pyfuns.transfer_functions.TRF.p2eta_krms()
+
+        Returns:
+            df_out - pd.DataFrame with input and output time series
         """
         # Copy input
-        eh = ph.copy()
-        eh = eh.to_frame(name='eta_hyd') # Convert to dataframe
+        df_out = ph.copy()
+        df_out = df_out.to_frame(name='eta_hyd') # Convert to dataframe
 
         # Check if bispectrum already saved
         if fn_bisp is not None:
@@ -849,18 +862,18 @@ class ADCP():
 
         # Apply linear transfer function from p->eta
         trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
-        eL, eNL = trf.p2eta_lin(eh['eta_hyd'].values, h0=h0, krms=krms, 
+        eL, eNL = trf.p2eta_lin(df_out['eta_hyd'].values, h0=h0, krms=krms, 
                                 f_krms=f_krms)
         # Save reconstructed surfaces to output dataframe
-        eh['eta_lin_krms'] = eL
-        eh['eta_nl_krms'] = eNL
+        df_out['eta_lin_krms'] = eL
+        df_out['eta_nl_krms'] = eNL
         # Detrend if requested
         if detrend_out:
-            eh['eta_lin_krms'] = detrend(eh['eta_lin_krms'].values)
-            eh['eta_nl_krms'] = detrend(eh['eta_nl_krms'].values)
+            df_out['eta_lin_krms'] = detrend(df_out['eta_lin_krms'].values)
+            df_out['eta_nl_krms'] = detrend(df_out['eta_nl_krms'].values)
 
         # Return dataframe
-        return eh
+        return df_out
 
         
     def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200, 
