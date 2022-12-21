@@ -4,6 +4,7 @@ elevation.
 """
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 from scipy import optimize
@@ -352,6 +353,9 @@ class TRF():
             # Compute cutoff frequency from peak frequency
             fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
             fc = fc_fact * fp
+        else:
+            # Set fp to None and compute it later from fft
+            fp = None
         
         # Frequency array
         freq = np.arange(0, N/2 + 1) / (N/2) * self.fs/2
@@ -380,8 +384,10 @@ class TRF():
         fft_e_HY[fidx] = 0
 
         # Dealing with cutoff frequency
-        ifp = np.argmax((np.abs(fft_e_HY**2)))
-        fp = freq[ifp]
+        if fp is None:
+            # Peak frequency was not computed earlier, do it now
+            ifp = np.argmax((np.abs(fft_e_HY**2)))
+            fp = freq[ifp]
         # Index corresponding to start of smoothing around fc
         ihw_b = round((fc - fp/4) / self.fs*N) 
         # Index corresponding to end of smoothing around fc
@@ -475,11 +481,11 @@ class TRF():
                 # Get indices of first and last zero-crossings of hydrostatic eta
                 zc, _, _, _ = rpzc.get_waveheights(eta_hyd, method='down')
                 # Set first and last zero crossings of e_NL equal to eta_hyd
-                e_NL[:zc[0]] = eta_hyd[:zc[0]]
-                e_NL[zc[-1]:] = eta_hyd[zc[-1]:]
+                e_NL[:zc[1]] = eta_hyd[:zc[1]]
+                e_NL[zc[-2]:] = eta_hyd[zc[-2]:]
                 # Same for e_L
-                e_L[:zc[0]] = eta_hyd[:zc[0]]
-                e_L[zc[-1]:] = eta_hyd[zc[-1]:]
+                e_L[:zc[1]] = eta_hyd[:zc[1]]
+                e_L[zc[-2]:] = eta_hyd[zc[-2]:]
 
             # Return both linear and nonlinear reconstructions
             return e_L, e_NL
@@ -576,8 +582,8 @@ if __name__ == '__main__':
     # Initialize class
     trf = TRF(fs=fs, zp=zp)
     # Transform pressure -> eta (linear) for 20-min chunk
-    z_lin = trf.p2eta_lin(dfe['z_hyd'].values, M=args.M,
-                          fmin=args.fmin, fmax=args.fmax)
+    z_lin = trf.p2z_lin(dfe['z_hyd'].values, M=args.M,
+                        fmin=args.fmin, fmax=args.fmax)
     eta_lin = z_lin - np.mean(z_lin)
 
     # Test K_rms reconstruction
