@@ -194,7 +194,8 @@ class ADCP():
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
-                     despike_vel=True, despike_ast=True, only_hpr=False):
+                     despike_vel=True, despike_ast=True, only_hpr=False,
+                    ):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
         data into xr.Dataset.
@@ -397,6 +398,10 @@ class ADCP():
                 df_ast['des'] = np.ones_like(dai.values) * np.nan
                 # Add column for raw signal minus 20-min mean level
                 df_ast['rdm'] = np.ones_like(dai.values) * np.nan
+                # Add column for raw detrended surface elevation
+                df_ast['raw_eta'] = np.ones_like(dai.values) * np.nan
+                # Add column for despiked surface elevation (detrended)
+                df_ast['des_eta'] = np.ones_like(dai.values) * np.nan
                 # Count number of full 20-minute (1200-sec) segments
                 t0s = pd.Timestamp(dai.time.values[0]) # Start timestamp
                 t1s = pd.Timestamp(dai.time.values[-1]) # End timestamp
@@ -410,9 +415,14 @@ class ADCP():
                     # Despike segment using GP method
                     seg_d, mask_d = self.despike_GP(seg, 
                                                     print_kernel=False,
-                                                )
+                                                   )
                     # Save despiked segment to correct indices in df_ast
                     df_ast['des'].loc[t0ss:t1ss] = seg_d
+                    if t0ss >= self.t0:
+                        # Save eta of despiked segment to correct indices in df_ast
+                        df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg_d)
+                        # Save eta of despiked segment to correct indices in df_ast
+                        df_ast['raw_eta'].loc[t0ss:t1ss] = detrend(seg)
                 # Save dataframe to csv
                 df_ast.to_csv(fn_ast_desp)
 
@@ -443,10 +453,10 @@ class ADCP():
                                             'vb3d': (['time', 'z'], vb3d), 
                                             'vb4d': (['time', 'z'], vb4d),
                                             'vb5d': (['time', 'z'], vb5d),
-                                            },
+                                           },
                                 coords={'time': (['time'], time_arr),
                                         'z': (['z'], np.arange(28))
-                                        },
+                                       },
                                 )
                 # Despike each beam at a time
                 cols_r = ['vb1', 'vb2', 'vb3', 'vb4', 'vb5']
@@ -488,13 +498,19 @@ class ADCP():
                 dsb = xr.open_dataset(fn_vel_desp)
         
         # Convert despiked beam velocities to E,N,U coordinates
-
+        # Note order and sign of beams!!!
+        beam_arr_d = np.array([-dsb.vb1d, -dsb.vb3d, -dsb.vb4d, -dsb.vb2d, -dsb.vb5d])
+        enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading, 
+                                  pitch=pitch, roll=roll)
 
         # Also read pressure and reconstruct linear sea-surface elevation
         pres = mat['Data']['Burst_Pressure'].item().squeeze()
         # Make pd.Series and convert to eta
         pres = pd.Series(pres, index=time_arr)
         dfp = self.p2z_lin(pres)
+        # Initialize columns for hydrostatic & linear surface elevations (detrended)
+        dfp['eta_hyd'] = np.ones_like(dfp['z_lin'].values) * np.nan
+        dfp['eta_lin'] = np.ones_like(dfp['z_lin'].values) * np.nan
         # Also reconstruct surface with linear+nonlinear method described in
         # Martins et al. (2021). Requires rms wavenumbers and bispectrum.
         dfp['eta_lin_krms'] = np.ones_like(dfp['z_lin'].values) * np.nan
@@ -508,29 +524,35 @@ class ADCP():
             # Get segment start and end times
             t0ss = pd.Timestamp(seg.index[0])
             t1ss = pd.Timestamp(seg.index[-1])
-            # Check if bispectrum already saved
-            dir_bisp = os.path.join(self.outdir, 'bispectra')
-            if not os.path.isdir(dir_bisp):
-                os.mkdir(dir_bisp)
-            fn_base = os.path.basename(fn_mat).split('.')[0]
-            fn_bisp = os.path.join(dir_vel_desp, '{}_bisp.nc'.format(fn_base))
-            if not os.path.isfile(fn_bisp):
-                # Estimate bispectrum of linear surface for segment
-                print('Estimating bispectrum ...')
-                dsbs = rpws.bispectrum((seg-np.mean(seg)), fs=self.fs, h0=np.mean(seg), 
-                                    timestamp=t0ss.round('20T'))
-                # Save bispectrum to netcdf
-                dsbs.to_netcdf(fn_bisp, engine='h5netcdf', invalid_netcdf=True)
-            else:
-                dsbs = xr.open_dataset(fn_bisp, engine='h5netcdf')
-            # Reconstruct sea surface using rms wavenumbers
-            dfp = self.p2eta_krms(dfp, h0=h0, krms=krms, f_krms=f_krms, 
-                                  tail_method=args.tail, fc_fact=args.fact,)
-
-
-        raise ValueError('Test stop')
-
-
+            # Detrend z_hyd and z_lin segments to get eta_hyd and eta_lin
+            seg_hyd = dfp['z_hyd'].loc[t0ss:t1ss].copy()
+            dfp['eta_hyd'].loc[t0ss:t1ss] = detrend(seg_hyd).copy()
+            dfp['eta_lin'].loc[t0ss:t1ss] = detrend(seg).copy()
+            if t0ss >= self.t0:
+                # Check if bispectrum already saved
+                dir_bisp = os.path.join(self.outdir, 'bispectra')
+                if not os.path.isdir(dir_bisp):
+                    os.mkdir(dir_bisp)
+                fn_base = os.path.basename(fn_mat).split('.')[0]
+                fn_bisp = os.path.join(dir_bisp, '{}_bisp_{:03d}.nc'.format(
+                    fn_base, sn))
+                if not os.path.isfile(fn_bisp):
+                    # Estimate bispectrum of linear surface for segment
+                    print('Estimating bispectrum ...')
+                    dsbs = rpws.bispectrum(detrend(seg), fs=self.fs, h0=np.mean(seg), 
+                                           timestamp=t0ss.round('20T'))
+                    # Save bispectrum to netcdf
+                    dsbs.to_netcdf(fn_bisp, engine='h5netcdf', invalid_netcdf=True)
+                else:
+                    print('Reading bispectrum netcdf file {}'.format(fn_bisp))
+                    dsbs = xr.open_dataset(fn_bisp, engine='h5netcdf')
+                # Reconstruct sea surface using rms wavenumbers and z_hyd
+                df_seg = self.p2eta_krms(seg_hyd, h0=dsbs.h0.item(), 
+                                         krms=dsbs.k_rms.values, 
+                                         f_krms=dsbs.freq.values,
+                                         fmax=2.0)
+                dfp['eta_lin_krms'].loc[t0ss:t1ss] = df_seg['eta_lin_krms'].copy()
+                dfp['eta_nl_krms'].loc[t0ss:t1ss] = df_seg['eta_nl_krms'].copy()
 
         # Also read temperature time series
         temp = mat['Data']['Burst_Temperature'].item().squeeze()
@@ -548,10 +570,15 @@ class ADCP():
                    'vU2': (['time', 'range'], vU2),
                    # Raw AST 
                    'ASTr': (['time'], df_ast['raw'].values),
-                   # Pressure and reconstructed sea surface
+                   'ASTr_eta': (['time'], df_ast['raw_eta'].values),
+                   # Pressure and reconstructed sea surfaces
                    'pressure':  (['time'], dfp['pressure']),
-                   'z_hyd':  (['time'], dfp['z_hyd']),
-                   'z_lin':  (['time'], dfp['z_lin']),
+                   'z_hyd': (['time'], dfp['z_hyd']),
+                   'z_lin': (['time'], dfp['z_lin']),
+                   'eta_hyd': (['time'], dfp['eta_hyd']),
+                   'eta_lin': (['time'], dfp['eta_lin']),
+                   'eta_lin_krms': (['time'], dfp['eta_lin_krms']),
+                   'eta_nl_krms': (['time'], dfp['eta_nl_krms']),
                    # Temperature (not calibrated?)
                    'temperature':  (['time'], temp),
                    # Heading, pitch, roll
@@ -563,6 +590,8 @@ class ADCP():
         if despike_ast:
             # GP-despiked AST
             data_vars['ASTd'] = (['time'], df_ast['des'].values)
+            # Also despiked surface elevation (detrended)
+            data_vars['ASTd_eta'] = (['time'], df_ast['des_eta'].values)
         if despike_vel:
             # Despiked beam velocities
             data_vars['vB1d'] = (['time', 'range'], dsb['vb1d'].values)
@@ -570,16 +599,17 @@ class ADCP():
             data_vars['vB3d'] = (['time', 'range'], dsb['vb3d'].values)
             data_vars['vB4d'] = (['time', 'range'], dsb['vb4d'].values)
             data_vars['vB5d'] = (['time', 'range'], dsb['vb5d'].values)
-#             data_vars['vEd'] = (['time', 'range'], dsb['vEd'].values)
-#             data_vars['vNd'] = (['time', 'range'], dsb['vNd'].values)
-#             data_vars['vU1d'] = (['time', 'range'], dsb['vU1d'].values)
-#             data_vars['vU2d'] = (['time', 'range'], dsb['vU2d'].values)
+            # ENU from HPR and despiked beam velocities
+            data_vars['vEhpr'] = (['time', 'range'], enu_vel_d[0,:,:])
+            data_vars['vNhpr'] = (['time', 'range'], enu_vel_d[1,:,:])
+            data_vars['vU1hpr'] = (['time', 'range'], enu_vel_d[2,:,:]) 
+            data_vars['vU2hpr'] = (['time', 'range'], enu_vel_d[3,:,:])
 
         # Make output dataset and save to netcdf
         ds = xr.Dataset(data_vars=data_vars,
                         coords={'time': (['time'], time_arr),
                                 'range': (['range'], zhab)}
-            )
+                       )
         ds = ds.sortby('time') # Sort indices (just in case)
 
         return ds
@@ -799,7 +829,7 @@ class ADCP():
 
 
     def p2z_lin(self, pt, rho0=1025, grav=9.81, M=512, fmin=0.05, 
-                  fmax=0.33, att_corr=True, ):
+                fmax=0.33, att_corr=True,):
         """
         Use linear transfer function to reconstruct sea-surface
         elevation time series from sub-surface pressure measurements.
@@ -830,7 +860,7 @@ class ADCP():
             pw['z_lin'] = np.ones_like(pw['z_hyd'].values) * np.nan
         else:
             # Apply linear transfer function from p->eta
-            trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+            trf = rptf.TRF(fs=self.fs, zp=self.zp)
             pw['z_lin'] = trf.p2z_lin(pw['z_hyd'], M=M, fmin=fmin, fmax=fmax,
                 att_corr=att_corr)
 
@@ -847,7 +877,7 @@ class ADCP():
         and returns linear and nonlinear surface reconstructions.
 
         Parameters:
-            ph - pd.Series; time series of hydrostatic surface elevation [m]
+            ph - pd.DataFrame; time series of hydrostatic surface elevation [m]
             h0 - scalar; mean water depth [m]
             detrend_out - bool; if True, returns detrended signal
             krms - array; root-mean-square wave number array following 
@@ -863,7 +893,7 @@ class ADCP():
         """
         # Copy input
         df_out = ph.copy()
-        df_out = df_out.to_frame(name='z_hyd') # Convert to dataframe
+        df_out = df_out.rename('z_hyd').to_frame()
 
         # Check if bispectrum already saved
         if fn_bisp is not None:
@@ -874,7 +904,8 @@ class ADCP():
             f_krms = dsb.freq.values
 
         # Apply linear transfer function from p->eta
-        trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+        trf = rptf.TRF(fs=self.fs, zp=self.zp)
+        print('len z_hyd: ', len(df_out['z_hyd'].values))
         eL, eNL = trf.p2eta_krms(df_out['z_hyd'].values, h0=h0, krms=krms, 
                                  f_krms=f_krms)
         # Save reconstructed surfaces to output dataframe
@@ -948,12 +979,10 @@ class ADCP():
             vEd = ds_seg[u].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
                                               method='nearest').values
-            print('sumNA vEd: ', np.sum(np.isnan(vEd)))
             vEd = pd.Series(vEd, index=seg.index)
             vNd = ds_seg[v].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
                                               method='nearest').values
-            print('sumNA vNd: ', np.sum(np.isnan(vNd)))
             vNd = pd.Series(vNd, index=seg.index)
             # Estimate spectra from 20-min. segments
             dss = rpws.spec_uvz(z=seg, 
@@ -975,7 +1004,7 @@ class ADCP():
 
 
     def save_vel_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
-                     ref_date=pd.Timestamp('2022-06-25'), ):
+                    ref_date=pd.Timestamp('2022-06-25'), ):
         """
         Save velocity/AST/pressure dataset ds to netcdf format.
 
@@ -1033,21 +1062,7 @@ class ADCP():
 
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
-                             'Signature1000 {} wave spectra'.format(self.mid))
-        if z_var == 'ASTd':
-            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
-                                    'Sea-surface elevation is the despiked ADCP ' + 
-                                    'acoustic surface track (AST) signal, and the ' + 
-                                    'horizontal velocities are despiked E&N velocities ' +
-                                    'from the range bin specified by the variable ' +
-                                    'vel_binh.')
-        elif z_var == 'z_lin':
-            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
-                                    'Sea-surface elevation is the linear sea-surface ' + 
-                                    'reconstruction from pressure, and the ' + 
-                                    'horizontal velocities are despiked E&N velocities ' +
-                                    'from the range bin specified by the variable ' +
-                                    'vel_binh.')
+                             'Signature1000 {} data'.format(self.mid))
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
@@ -1474,7 +1489,7 @@ if __name__ == '__main__':
             os.mkdir(figdir)
         # Initialize class
         adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, 
-                    outdir=outdir)
+                    outdir=outdir, patm=dfa)
         # Save all datasets for the same date in list for concatenating
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
