@@ -1127,8 +1127,11 @@ class ADCP():
 
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
-                             'Signature1000 {} data'.format(self.mid))
-        ds.attrs['summary'] = ('')
+                             'Signature1000 data from mooring ID {}'.format(self.mid))
+        ds.attrs['summary'] = ('Nortek Signature 1000 velocity, surface elevation and ' +
+                               'temperature measurements from instrument ' + 
+                               'with serial number {} located at Asilomar small-scale array ' + 
+                               'mooring site {}.'.format(self.ser, self.mid))
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
