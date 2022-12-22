@@ -113,6 +113,7 @@ class ADCP():
             self.t0 = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
             key = 'record_end'
             self.t1 = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
+     
         else:
             self.dfm = None # No mooring info dataframe
             self.mid = None # No mooring ID number
@@ -122,6 +123,10 @@ class ADCP():
         self.patm = patm
         # Bathymetry dataset if provided
         self.bathy = bathy
+       # Get lat, lon coordinates of mooring
+        self.lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
+        self.lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
+
 
 
     def _fns_from_ser(self):
@@ -195,6 +200,7 @@ class ADCP():
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
                      despike_vel=True, despike_ast=True, only_hpr=False,
+                     fmin=0.05, fmax=0.33,
                     ):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
@@ -214,6 +220,8 @@ class ADCP():
                           segments.
             only_hpr - bool; if True, output only pd.Dataframe of heading,
                        pitch and roll.
+            fmin - scalar; min. frequency for surface reconstruction from pressure
+            fmax - scalar; max. frequency for surface reconstruction from pressure
         
         Returns:
             ds - xarray.Dataset with data read from input .mat file
@@ -286,59 +294,6 @@ class ADCP():
         vN = mat['Data']['Burst_VelNorth'].item().squeeze()
         vU1 = mat['Data']['Burst_VelUp1'].item().squeeze()
         vU2 = mat['Data']['Burst_VelUp2'].item().squeeze()
-
-        # Save calculated vs. Nortek ENU velocities for comparison and 
-        # testing with Matlab toolbox
-        dst = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
-                                    'vb2': (['time', 'z'], vb2),
-                                    'vb3': (['time', 'z'], vb3), 
-                                    'vb4': (['time', 'z'], vb4),
-                                    'vb5': (['time', 'z'], vb5),
-                                    'vb5i': (['time', 'z'], vb5i),
-                                    # ENU by Nortek
-                                    'vE': (['time', 'z'], vE), 
-                                    'vN': (['time', 'z'], vN),
-                                    'vU1': (['time', 'z'], vU1), 
-                                    'vU2': (['time', 'z'], vU2),
-                                    # ENU from HPR
-                                    'vEc': (['time', 'z'], enu_vel_i[0,:,:]), 
-                                    'vNc': (['time', 'z'], enu_vel_i[1,:,:]),
-                                    'vU1c': (['time', 'z'], enu_vel_i[2,:,:]), 
-                                    'vU2c': (['time', 'z'], enu_vel_i[3,:,:]),
-                                    # H, P, R
-                                    'H': (['time'], heading), 
-                                    'P': (['time'], pitch), 
-                                    'R': (['time'], roll), 
-                                    },
-                        coords={'time': (['time'], time_vals.astype('f8')),
-                                'z': (['z'], np.arange(28).astype('i4'))
-                                },
-                        )
-        dst.time.encoding['units'] = time_units
-        dst.time.attrs['units'] = time_units
-        dst.time.attrs['standard_name'] = 'time'
-        encoding = {'time': {'zlib': False, '_FillValue': None},
-                    'z': {'zlib': False, '_FillValue': None},
-                    'vb1': {'zlib': False, '_FillValue': -9999.},
-                    'vb2': {'zlib': False, '_FillValue': -9999.},
-                    'vb3': {'zlib': False, '_FillValue': -9999.},
-                    'vb4': {'zlib': False, '_FillValue': -9999.},
-                    'vb5': {'zlib': False, '_FillValue': -9999.},
-                    'vE': {'zlib': False, '_FillValue': -9999.},
-                    'vN': {'zlib': False, '_FillValue': -9999.},
-                    'vU1': {'zlib': False, '_FillValue': -9999.},
-                    'vU2': {'zlib': False, '_FillValue': -9999.},
-                    'vEc': {'zlib': False, '_FillValue': -9999.},
-                    'vNc': {'zlib': False, '_FillValue': -9999.},
-                    'vU1c': {'zlib': False, '_FillValue': -9999.},
-                    'vU2c': {'zlib': False, '_FillValue': -9999.},
-                    'H': {'zlib': False, '_FillValue': -9999.},
-                    'P': {'zlib': False, '_FillValue': -9999.},
-                    'R': {'zlib': False, '_FillValue': -9999.},
-                   }  
-        # Save test dataset
-        fn_test = os.path.join(outdir, 'enu_test.nc')
-        dst.to_netcdf(fn_test, encoding=encoding)
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
@@ -507,7 +462,8 @@ class ADCP():
         pres = mat['Data']['Burst_Pressure'].item().squeeze()
         # Make pd.Series and convert to eta
         pres = pd.Series(pres, index=time_arr)
-        dfp = self.p2z_lin(pres)
+        # Convert pressure to hydrostatic & linear surface
+        dfp = self.p2z_lin(pres, fmin=fmin, fmax=fmax)
         # Initialize columns for hydrostatic & linear surface elevations (detrended)
         dfp['eta_hyd'] = np.ones_like(dfp['z_lin'].values) * np.nan
         dfp['eta_lin'] = np.ones_like(dfp['z_lin'].values) * np.nan
@@ -611,6 +567,14 @@ class ADCP():
                                 'range': (['range'], zhab)}
                        )
         ds = ds.sortby('time') # Sort indices (just in case)
+
+        # Set fmin, fmax attributes for surface reconstructions from pressure
+        ds.z_lin.attrs['fmin'] = '{} Hz'.format(fmin)
+        ds.z_lin.attrs['fmax'] = '{} Hz'.format(fmax)
+        ds.eta_lin.attrs['fmin'] = '{} Hz'.format(fmin)
+        ds.eta_lin.attrs['fmax'] = '{} Hz'.format(fmax)
+        ds.eta_lin_krms.attrs['f_cutoff'] = '2.5 x fp'
+        ds.eta_nl_krms.attrs['f_cutoff'] = '2.5 x fp'
 
         return ds
 
@@ -920,7 +884,7 @@ class ADCP():
         return df_out
 
         
-    def wavespec(self, ds, u='vEd', v='vNd', z='ASTd', seglen=1200, 
+    def wavespec(self, ds, u='vEhpr', v='vNhpr', z='ASTd', seglen=1200, 
                  fmin=0.05, fmax=0.33):
         """
         Estimate wave spectra from ADCP data in the input dataset ds.
@@ -958,10 +922,6 @@ class ADCP():
         for sn, seg in enumerate(np.array_split(zA, nseg)):
             # Get segment start and end times
             t0ss = seg.index[0]
-#            print('seg start: {}'.format(t0ss))
-#            print('seg start (round): {}'.format(
-#                 pd.Timestamp(t0ss).round('20T')))
-#             print(' ')
             t1ss = seg.index[-1]
             print('spec for {} - {}'.format(t0ss, t1ss))
             # Take time slice from dataset
@@ -995,6 +955,9 @@ class ADCP():
                                 )
             # Add range value to output dataset
             dss['vel_binh'] = (['time'], np.atleast_1d(range_val))
+            # Add mean water depth value to output dataset
+            seg_d = ds_seg.z_hyd.values # Hydrostatic depth of segment
+            dss['water_depth'] = (['time'], np.atleast_1d(np.mean(seg_d)))
             # Append to list
             dss_list.append(dss)
         # Concatenate all spectrum datasets into one
@@ -1009,7 +972,7 @@ class ADCP():
         Save velocity/AST/pressure dataset ds to netcdf format.
 
         Parameters:
-            ds - input spectral xr.Dataset
+            ds - input velocity/surface elevation xr.Dataset
             fn - str; path for netcdf filename
             overwrite - bool; if False, does not overwrite existing file
             fillvalue - scalar; fill value to denote missing values
@@ -1036,9 +999,9 @@ class ADCP():
             lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
             ds = ds.assign_coords(lat=[lat])
         else:
-            lon = dsb['{}_llc'.format(self.mid)].sel(llc='longitude').item()
+            lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
             ds = ds.assign_coords(lon=[lon])
-            lat = dsb['{}_llc'.format(self.mid)].sel(llc='latitude').item()
+            lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
             ds = ds.assign_coords(lat=[lat])
         # Set variable attributes for output netcdf file
         ds.lat.attrs['standard_name'] = 'latitude'
@@ -1054,11 +1017,113 @@ class ADCP():
         ds.time.encoding['units'] = time_units
         ds.time.attrs['units'] = time_units
         ds.time.attrs['standard_name'] = 'time'
-        ds.time.attrs['long_name'] = 'Local time (PDT) of spectral segment start'
-        # Sig. wave height and other integrated parameters
-        ds.vel_binh.attrs['units'] = 'm'
-        ds.vel_binh.attrs['standard_name'] = 'height'
-        ds.vel_binh.attrs['long_name'] = 'horizontal velocity bin center height above seabed'
+        ds.time.attrs['long_name'] = 'Local time (PDT)'
+
+        # Variables
+        ds.vB1.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB1.attrs['long_name'] = 'Raw ADCP beam 1 velocity'
+        ds.vB1.attrs['units'] = 'm/s'
+        ds.vB2.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB2.attrs['long_name'] = 'Raw ADCP beam 2 velocity'
+        ds.vB2.attrs['units'] = 'm/s'
+        ds.vB3.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB3.attrs['long_name'] = 'Raw ADCP beam 3 velocity'
+        ds.vB3.attrs['units'] = 'm/s'
+        ds.vB4.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB4.attrs['long_name'] = 'Raw ADCP beam 4 velocity'
+        ds.vB4.attrs['units'] = 'm/s'
+        ds.vB5.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB5.attrs['long_name'] = 'Raw ADCP beam 5 velocity'
+        ds.vB5.attrs['units'] = 'm/s'
+        # Despiked beam velocities
+        ds.vB1d.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB1d.attrs['long_name'] = 'Despiked ADCP beam 1 velocity'
+        ds.vB1d.attrs['units'] = 'm/s'
+        ds.vB2d.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB2d.attrs['long_name'] = 'Despiked ADCP beam 2 velocity'
+        ds.vB2d.attrs['units'] = 'm/s'
+        ds.vB3d.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB3d.attrs['long_name'] = 'Despiked ADCP beam 3 velocity'
+        ds.vB3d.attrs['units'] = 'm/s'
+        ds.vB4d.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB4d.attrs['long_name'] = 'Despiked ADCP beam 4 velocity'
+        ds.vB4d.attrs['units'] = 'm/s'
+        ds.vB5d.attrs['standard_name'] = 'sea_water_beam_velocity'
+        ds.vB5d.attrs['long_name'] = 'Despiked ADCP beam 5 velocity'
+        ds.vB5d.attrs['units'] = 'm/s'
+        # ENU velocities from Nortek
+        ds.vE.attrs['standard_name'] = 'eastward_sea_water_velocity'
+        ds.vE.attrs['long_name'] = 'Eastward velocity from Nortek software'
+        ds.vE.attrs['units'] = 'm/s'
+        ds.vN.attrs['standard_name'] = 'northward_sea_water_velocity'
+        ds.vN.attrs['long_name'] = 'Northward velocity from Nortek software'
+        ds.vN.attrs['units'] = 'm/s'
+        ds.vU1.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.vU1.attrs['long_name'] = 'Vertical velocity 1 from Nortek software'
+        ds.vU1.attrs['units'] = 'm/s'
+        ds.vU2.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.vU2.attrs['long_name'] = 'Vertical velocity 2 from Nortek software'
+        ds.vU2.attrs['units'] = 'm/s'
+        # ENU velocities calculated from heading, pitch & roll
+        ds.vEhpr.attrs['standard_name'] = 'eastward_sea_water_velocity'
+        ds.vEhpr.attrs['long_name'] = 'Eastward velocity calculated from heading, pitch and roll'
+        ds.vEhpr.attrs['units'] = 'm/s'
+        ds.vNhpr.attrs['standard_name'] = 'northward_sea_water_velocity'
+        ds.vNhpr.attrs['long_name'] = 'Northward velocity calculated from heading, pitch and roll'
+        ds.vNhpr.attrs['units'] = 'm/s'
+        ds.vU1hpr.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.vU1hpr.attrs['long_name'] = 'Vertical velocity calculated from 4 beams using heading, pitch and roll'
+        ds.vU1hpr.attrs['units'] = 'm/s'
+        ds.vU2hpr.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.vU2hpr.attrs['long_name'] = 'Vertical velocity 5th vertical beam'
+        ds.vU2hpr.attrs['units'] = 'm/s'
+        # Surface elevation products
+        ds.ASTr.attrs['standard_name'] = 'depth'
+        ds.ASTr.attrs['long_name'] = 'Raw AST distance to sea surface'
+        ds.ASTr.attrs['units'] = 'm'
+        ds.ASTr_eta.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.ASTr_eta.attrs['long_name'] = 'Raw AST sea surface elevation over 20-minute mean level'
+        ds.ASTr_eta.attrs['units'] = 'm'
+        ds.ASTd.attrs['standard_name'] = 'depth'
+        ds.ASTd.attrs['long_name'] = 'Despiked AST distance to sea surface'
+        ds.ASTd.attrs['units'] = 'm'
+        ds.ASTd_eta.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.ASTd_eta.attrs['long_name'] = 'Despiked AST sea surface elevation over 20-minute mean level'
+        ds.ASTd_eta.attrs['units'] = 'm'
+        ds.pressure.attrs['standard_name'] = 'sea_water_pressure_due_to_sea_water'
+        ds.pressure.attrs['long_name'] = 'Water pressure'
+        ds.pressure.attrs['units'] = 'dbar'
+        ds.z_hyd.attrs['standard_name'] = 'depth'
+        ds.z_hyd.attrs['long_name'] = 'Hydrostatic distance to sea surface'
+        ds.z_hyd.attrs['units'] = 'm'
+        ds.eta_hyd.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_hyd.attrs['long_name'] = 'Hydrostatic sea surface elevation over 20-minute mean level'
+        ds.eta_hyd.attrs['units'] = 'm'
+        ds.z_lin.attrs['standard_name'] = 'depth'
+        ds.z_lin.attrs['long_name'] = 'Linearly reconstructed distance to sea surface following Tucker and Pitt (2001)'
+        ds.z_lin.attrs['units'] = 'm'
+        ds.z_lin.attrs['fmin'] = 'm'
+        ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_lin.attrs['long_name'] = 'Linearly reconstructed sea surface elevation over 20-minute mean level following Tucker and Pitt (2001)'
+        ds.eta_lin.attrs['units'] = 'm'
+        ds.eta_lin_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_lin_krms.attrs['long_name'] = 'Linearly reconstructed sea surface elevation over 20-minute mean level following Martins et al. (2021)'
+        ds.eta_lin_krms.attrs['units'] = 'm'
+        ds.eta_nl_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_nl_krms.attrs['long_name'] = 'Non-linearly reconstructed sea surface elevation over 20-minute mean level following Martins et al. (2021)'
+        ds.eta_nl_krms.attrs['units'] = 'm'
+        ds.temperature.attrs['standard_name'] = 'sea_water_temperature'
+        ds.temperature.attrs['long_name'] = 'Temperature recorded by ADCP'
+        ds.temperature.attrs['units'] = 'degC'
+        ds.heading_ang.attrs['standard_name'] = 'platform_orientation'
+        ds.heading_ang.attrs['long_name'] = 'ADCP heading angle in degrees'
+        ds.heading_ang.attrs['units'] = 'degrees'
+        ds.pitch_ang.attrs['standard_name'] = 'platform_pitch'
+        ds.pitch_ang.attrs['long_name'] = 'ADCP pitch angle in degrees'
+        ds.pitch_ang.attrs['units'] = 'degrees'
+        ds.roll_ang.attrs['standard_name'] = 'platform_roll'
+        ds.roll_ang.attrs['long_name'] = 'ADCP roll angle in degrees'
+        ds.roll_ang.attrs['units'] = 'degrees'
 
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
@@ -1066,7 +1131,6 @@ class ADCP():
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
-        ds.attrs['segment_length'] = '1200 seconds'
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
             comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
@@ -1084,9 +1148,13 @@ class ADCP():
 
         # Set encoding before saving
         encoding = {'time': {'zlib': False, '_FillValue': None},
+                    'range': {'zlib': False, '_FillValue': None},
                     'lat': {'zlib': False, '_FillValue': None},
                     'lon': {'zlib': False, '_FillValue': None},
                    }     
+        # Set variable fill values
+        for k in list(ds.keys()):
+            encoding[k] = {'_Fillvalue': fillvalue}
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
@@ -1121,14 +1189,26 @@ class ADCP():
                              has_year_zero=True)
         ds.coords['time'] = time_vals.astype(float)
         # Make lon, lat coordinates
-        ds = ds.assign_coords(lon=[36.6250768146788])
-        ds = ds.assign_coords(lat=[-121.94334673203694])
+        if self.bathy is None:
+            lon = self.dfm[self.dfm['mooring_ID_long']==self.midl]['longitude'].item()
+            ds = ds.assign_coords(lon=[lon])
+            lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
+            ds = ds.assign_coords(lat=[lat])
+        else:
+            lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
+            ds = ds.assign_coords(lon=[lon])
+            lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
+            ds = ds.assign_coords(lat=[lat])
         # Set variable attributes for output netcdf file
         ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
         if z_var == 'ASTd':
             z_str = 'AST'
         elif z_var == 'z_lin':
             z_str = 'linear pressure reconstruction'
+        elif z_var == 'eta_lin_krms':
+            z_str = 'linear pressure reconstruction using K_rms'
+        elif z_var == 'eta_nl_krms':
+            z_str = 'nonlinear pressure reconstruction using K_rms'
         ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum from {}'.format(
             z_str)
         ds.Ezz.attrs['units'] = 'm^2/Hz'
@@ -1174,6 +1254,9 @@ class ADCP():
         ds.vel_binh.attrs['units'] = 'm'
         ds.vel_binh.attrs['standard_name'] = 'height'
         ds.vel_binh.attrs['long_name'] = 'horizontal velocity bin center height above seabed'
+        ds.water_depth.attrs['units'] = 'm'
+        ds.water_depth.attrs['standard_name'] = 'depth'
+        ds.water_depth.attrs['long_name'] = 'Mean water depth from hydrostatic pressure head'
         ds.Hm0.attrs['units'] = 'm'
         ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
         ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
@@ -1222,6 +1305,22 @@ class ADCP():
                                     'horizontal velocities are despiked E&N velocities ' +
                                     'from the range bin specified by the variable ' +
                                     'vel_binh.')
+        elif z_var == 'eta_lin_krms':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the linear sea-surface ' + 
+                                    'reconstruction from pressure and K_rms following Martins ' +
+                                    'et al. (2021), and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        elif z_var == 'eta_nl_krms':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the nonlinear sea-surface ' + 
+                                    'reconstruction from pressure and K_rms following Martins ' +
+                                    'et al. (2021), and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
@@ -1246,23 +1345,10 @@ class ADCP():
                     'freq': {'zlib': False, '_FillValue': None},
                     'lat': {'zlib': False, '_FillValue': None},
                     'lon': {'zlib': False, '_FillValue': None},
-                    'Euu': {'_FillValue': fillvalue},        
-                    'Evv': {'_FillValue': fillvalue},        
-                    'Ezz': {'_FillValue': fillvalue},        
-                    'a1': {'_FillValue': fillvalue},        
-                    'a2': {'_FillValue': fillvalue},        
-                    'b1': {'_FillValue': fillvalue},        
-                    'b2': {'_FillValue': fillvalue},        
-                    'dspr': {'_FillValue': fillvalue},        
-                    'vel_binh': {'_FillValue': fillvalue},        
-                    'Hm0': {'_FillValue': fillvalue},        
-                    'Te': {'_FillValue': fillvalue},
-                    'Tp_ind': {'_FillValue': fillvalue},
-                    'Tp_Y95': {'_FillValue': fillvalue},
-                    'Dp_ind': {'_FillValue': fillvalue},
-                    'Dp_Y95': {'_FillValue': fillvalue},
-                    'nu_LH57': {'_FillValue': fillvalue},
-                   }     
+                   }
+        # Set variable fill values
+        for k in list(ds.keys()):
+            encoding[k] = {'_Fillvalue': fillvalue}
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
