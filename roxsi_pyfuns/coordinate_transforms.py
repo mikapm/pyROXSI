@@ -164,7 +164,6 @@ def beam2enu(beam_vel, heading, pitch, roll, theta=25, nortek=True,
     cz1 = Cph1 * Sph3 - Sph1 * Sph2 * Cph3
     cz2 = Sph1 * Sph3 + Cph1 * Sph2 * Cph3
     cz3 = Cph2 * Cph3
-    print('cz3: ', cz3[:10])
 
     # Convert beam-referenced velocities to instrument-referenced 
     # velocities.
@@ -177,7 +176,6 @@ def beam2enu(beam_vel, heading, pitch, roll, theta=25, nortek=True,
     xyz_vel = beam2xyz(np.array([vb1, vb2, vb3, vb4, vb5]), theta)
 
     w5 = np.multiply(xyz_vel[3,:,:],  cz3) # w from beam 5 only.
-    print('w5: ', w5[0,:10])
 
     if beam5:
         # Use vertical 5th beam to calculate vE, vN & vU
