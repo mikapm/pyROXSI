@@ -1128,6 +1128,7 @@ class ADCP():
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
                              'Signature1000 {} data'.format(self.mid))
+        ds.attrs['summary'] = ('')
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
@@ -1203,6 +1204,8 @@ class ADCP():
         ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
         if z_var == 'ASTd':
             z_str = 'AST'
+        elif z_var == 'z_hyd':
+            z_str = 'hydrostatic pressure reconstruction'
         elif z_var == 'z_lin':
             z_str = 'linear pressure reconstruction'
         elif z_var == 'eta_lin_krms':
@@ -1295,6 +1298,13 @@ class ADCP():
             ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
                                     'Sea-surface elevation is the despiked ADCP ' + 
                                     'acoustic surface track (AST) signal, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        elif z_var == 'z_hyd':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the hydrostatic sea-surface ' + 
+                                    'reconstruction from pressure, and the ' + 
                                     'horizontal velocities are despiked E&N velocities ' +
                                     'from the range bin specified by the variable ' +
                                     'vel_binh.')
@@ -1524,6 +1534,11 @@ if __name__ == '__main__':
         if not os.path.isdir(figdir):
             print('Making output figure dir. {}'.format(figdir))
             os.mkdir(figdir)
+        # Spectrum directory
+        specdir = os.path.join(outdir, 'Spectra')
+        if not os.path.isdir(specdir):
+            print('Making output spectrum dir. {}'.format(specdir))
+            os.mkdir(specdir)
         # Initialize class
         adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, patm=dfa,
                     bathy=dsb, outdir=outdir)
@@ -1573,12 +1588,14 @@ if __name__ == '__main__':
         if not os.path.isdir(figdir):
             print('Making output figure dir. {}'.format(figdir))
             os.mkdir(figdir)
+
         # Initialize class
         adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, 
                     outdir=outdir, patm=dfa)
         # Save all datasets for the same date in list for concatenating
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
+
         # Loop over raw .mat files and save daily data as netcdf
         for i,fn_mat in enumerate(adcp.fns):
             # Check if daily netcdf files already exist
@@ -1599,6 +1616,7 @@ if __name__ == '__main__':
             fn_nc1 = os.path.join(outdir, 
                 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
                     adcp.mid, date1_str))
+
             if not os.path.isfile(fn_nc0) or not os.path.isfile(fn_nc1):
                 # Read mat structure for velocities and 1D timeseries
                 dsv = adcp.loaddata_vel(fn_mat)
@@ -1630,7 +1648,7 @@ if __name__ == '__main__':
                         dsd.to_netcdf(fn_nc0)
             
                     # Estimate 20-min. wave spectra from AST
-                    fn_spec_ast = os.path.join(outdir, 
+                    fn_spec_ast = os.path.join(specdir, 
                                            'Asilomar_SSA_L2_Sig_Spec_ASTd_{}_{}.nc'.format(
                                                 adcp.mid, date0_str))
                     if not os.path.isfile(fn_spec_ast):
@@ -1640,7 +1658,7 @@ if __name__ == '__main__':
                         adcp.save_spec_nc(dss_daily, fn=fn_spec_ast, z_var='ASTd')
                     
                     # Also estimate 20-min. wave spectra from linear pressure reconstruction
-                    fn_spec_etal = os.path.join(outdir, 
+                    fn_spec_etal = os.path.join(specdir, 
                                            'Asilomar_SSA_L2_Sig_Spec_ETAl_{}_{}.nc'.format(
                                                 adcp.mid, date0_str))
                     if not os.path.isfile(fn_spec_etal):
@@ -1648,6 +1666,38 @@ if __name__ == '__main__':
                         dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_lin')
                         # Save spectra to netCDF
                         adcp.save_spec_nc(dss_daily, fn=fn_spec_etal, z_var='z_lin')
+
+                    # Also estimate 20-min. wave spectra from K_rms linear pressure reconstruction
+                    fn_spec_etalk = os.path.join(specdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAlkrms_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etalk):
+                        print('Estimating daily spectra from eta_lin_krms ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin_krms')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etalk, z_var='eta_lin_krms')
+
+                    # Also estimate 20-min. wave spectra from K_rms nonlinear pressure reconstruction
+                    fn_spec_etanl = os.path.join(specdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAnlkrms_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etanl):
+                        print('Estimating daily spectra from eta_nl_krms ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_nl_krms')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etanl, z_var='eta_nl_krms')
+
+                    # Also estimate 20-min. wave spectra from hydrostatic pressure reconstruction
+                    fn_spec_zh = os.path.join(specdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAh_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_zh):
+                        print('Estimating daily spectra from z_hyd ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_hyd')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_zh, z_var='z_hyd')
+
+
 
                     # Make new empty list and append the following day
                     dsv_daily = []
@@ -1662,7 +1712,7 @@ if __name__ == '__main__':
                         dsd.to_netcdf(fn_nc0)
 
                     # Estimate 20-min. wave spectra from AST
-                    fn_spec_ast = os.path.join(outdir, 
+                    fn_spec_ast = os.path.join(specdir, 
                                            'Asilomar_SSA_L2_Sig_Spec_ASTd_{}_{}.nc'.format(
                                                 adcp.mid, date0_str))
                     if not os.path.isfile(fn_spec_ast):
@@ -1672,7 +1722,7 @@ if __name__ == '__main__':
                         adcp.save_spec_nc(dss_daily, fn=fn_spec_ast, z_var='ASTd')
                     
                     # Also estimate 20-min. wave spectra from linear pressure reconstruction
-                    fn_spec_etal = os.path.join(outdir, 
+                    fn_spec_etal = os.path.join(specdir, 
                                            'Asilomar_SSA_L2_Sig_Spec_ETAl_{}_{}.nc'.format(
                                                 adcp.mid, date0_str))
                     if not os.path.isfile(fn_spec_etal):
@@ -1680,11 +1730,42 @@ if __name__ == '__main__':
                         dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_lin')
                         # Save spectra to netCDF
                         adcp.save_spec_nc(dss_daily, fn=fn_spec_etal, z_var='z_lin')
+
+                    # Also estimate 20-min. wave spectra from K_rms linear pressure reconstruction
+                    fn_spec_etalk = os.path.join(specdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAlkrms_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etalk):
+                        print('Estimating daily spectra from eta_lin_krms ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin_krms')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etalk, z_var='eta_lin_krms')
+
+                    # Also estimate 20-min. wave spectra from K_rms nonlinear pressure reconstruction
+                    fn_spec_etanl = os.path.join(specdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAnlkrms_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etanl):
+                        print('Estimating daily spectra from eta_nl_krms ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_nl_krms')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etanl, z_var='eta_nl_krms')
+
+                    # Also estimate 20-min. wave spectra from hydrostatic pressure reconstruction
+                    fn_spec_zh = os.path.join(specdir, 
+                                           'Asilomar_SSA_L2_Sig_Spec_ETAh_{}_{}.nc'.format(
+                                                adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_zh):
+                        print('Estimating daily spectra from z_hyd ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_hyd')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_zh, z_var='z_hyd')
+
             else:
                 # Read existing file(s)
                 dsd = xr.decode_cf(xr.open_dataset(fn_nc0, decode_coords='all'))
                 # Estimate 20-min. wave spectra from AST
-                fn_spec_ast = os.path.join(outdir, 
+                fn_spec_ast = os.path.join(specdir, 
                                         'Asilomar_SSA_L2_Sig_Spec_ASTd_{}_{}.nc'.format(
                                             adcp.mid, date0_str))
                 if not os.path.isfile(fn_spec_ast):
@@ -1694,7 +1775,7 @@ if __name__ == '__main__':
                     adcp.save_spec_nc(dss_daily, fn=fn_spec_ast, z_var='ASTd')
                 
                 # Also estimate 20-min. wave spectra from linear pressure reconstruction
-                fn_spec_etal = os.path.join(outdir, 
+                fn_spec_etal = os.path.join(specdir, 
                                         'Asilomar_SSA_L2_Sig_Spec_ETAl_{}_{}.nc'.format(
                                             adcp.mid, date0_str))
                 if not os.path.isfile(fn_spec_etal):
@@ -1702,6 +1783,40 @@ if __name__ == '__main__':
                     dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_lin')
                     # Save spectra to netCDF
                     adcp.save_spec_nc(dss_daily, fn=fn_spec_etal, z_var='z_lin')
+
+                # Also estimate 20-min. wave spectra from K_rms linear pressure reconstruction
+                fn_spec_etalk = os.path.join(specdir, 
+                                        'Asilomar_SSA_L2_Sig_Spec_ETAlkrms_{}_{}.nc'.format(
+                                            adcp.mid, date0_str))
+                if not os.path.isfile(fn_spec_etalk):
+                    print('Estimating daily spectra from eta_lin_krms ...')
+                    dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin_krms')
+                    # Save spectra to netCDF
+                    adcp.save_spec_nc(dss_daily, fn=fn_spec_etalk, z_var='eta_lin_krms')
+
+                # Also estimate 20-min. wave spectra from K_rms nonlinear pressure reconstruction
+                fn_spec_etanl = os.path.join(specdir, 
+                                        'Asilomar_SSA_L2_Sig_Spec_ETAnlkrms_{}_{}.nc'.format(
+                                            adcp.mid, date0_str))
+                if not os.path.isfile(fn_spec_etanl):
+                    print('Estimating daily spectra from eta_nl_krms ...')
+                    dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_nl_krms')
+                    # Save spectra to netCDF
+                    adcp.save_spec_nc(dss_daily, fn=fn_spec_etanl, z_var='eta_nl_krms')
+
+                # Also estimate 20-min. wave spectra from hydrostatic pressure reconstruction
+                fn_spec_zh = os.path.join(specdir, 
+                                        'Asilomar_SSA_L2_Sig_Spec_ETAh_{}_{}.nc'.format(
+                                            adcp.mid, date0_str))
+                if not os.path.isfile(fn_spec_zh):
+                    print('Estimating daily spectra from z_hyd ...')
+                    dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_hyd')
+                    # Save spectra to netCDF
+                    adcp.save_spec_nc(dss_daily, fn=fn_spec_zh, z_var='z_hyd')
+
+    print(' ')
+    print('Done.')
+
 
 
 
