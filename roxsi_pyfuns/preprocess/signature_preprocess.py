@@ -60,7 +60,7 @@ class ADCP():
     """
     Main ADCP data class.
     """
-    def __init__(self, datadir, ser, zp=0.08, fs=4, burstlen=1200, 
+    def __init__(self, datadir, ser, zp=0.3188, fs=4, burstlen=1200, 
                  magdec=12.86, beam_ang=25, binsz=0.5, outdir=None, 
                  mooring_info=None, patm=None, bathy=None, 
                  instr='NortekSignature1000'):
@@ -199,7 +199,7 @@ class ADCP():
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
-                     despike_vel=True, despike_ast=True, only_hpr=False,
+                     despike_vel=False, despike_ast=True, only_hpr=False,
                      fmin=0.05, fmax=0.33,
                     ):
         """
@@ -213,7 +213,7 @@ class ADCP():
                           3D phase-space despiking method of Goring
                           and Nikora (2002), modified by Wahl (2003)
                           and Mori et al. (2007) in 20-minute
-                          segments. NB: Not implemented!
+                          segments. 
             despike_ast - bool; if True, despikes Acoustic Surface
                           Tracking (AST) data using Gaussian Process
                           method of Malila et al. (2022) in 20-minute
@@ -239,6 +239,22 @@ class ADCP():
 
         # Read and convert general (velocity) time array
         time_mat, time_arr = self.read_mat_times(mat=mat)
+        # Check for duplicates in time_arr
+        time_arr_ind = pd.Index(time_arr)
+        duplicates = time_arr_ind.duplicated().any()
+        if duplicates == True:
+            print('{} duplicates found in time_arr'.format(np.sum(
+                time_arr_ind.duplicated())))
+            print('duplicates: ', time_arr[time_arr_ind.duplicated()])
+            # Get sorting and duplicate indices
+            sort_ind = np.argsort(time_arr_ind)
+            dupl_ind = time_arr_ind[sort_ind].duplicated(keep='last')
+            # Sort and remove duplicate(s) from time_arr
+            time_arr = time_arr[sort_ind][~dupl_ind]
+            time_arr_ind = pd.Index(time_arr)
+            print('after removal of dupl.: {} left'.format(np.sum(
+                time_arr_ind.duplicated())))
+
         # Convert time array to numerical format
         time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
         time_vals = date2num(time_arr, time_units, calendar='standard', 
@@ -248,6 +264,11 @@ class ADCP():
         heading = mat['Data']['Burst_Heading'].item().squeeze()
         pitch = mat['Data']['Burst_Pitch'].item().squeeze()
         roll = mat['Data']['Burst_Roll'].item().squeeze()
+        # Remove possible duplicates
+        if duplicates == True:
+            heading = heading[sort_ind][~dupl_ind]
+            pitch = pitch[sort_ind][~dupl_ind]
+            roll = roll[sort_ind][~dupl_ind]
 
         # If requesting only H,D,R timeseries, return dataframe
         if only_hpr:
@@ -258,7 +279,7 @@ class ADCP():
                                         'pressure':pres,
                                         },
                                   index=time_arr,
-                                  )
+                                 )
             return df_hpr
 
         # Velocities from beams 1-4
@@ -266,12 +287,34 @@ class ADCP():
         vb2 = mat['Data']['Burst_VelBeam2'].item().squeeze()
         vb3 = mat['Data']['Burst_VelBeam3'].item().squeeze()
         vb4 = mat['Data']['Burst_VelBeam4'].item().squeeze()
+        # Remove duplicate(s) if applicable
+        if duplicates == True:
+            vb1 = vb1[sort_ind][~dupl_ind]
+            vb2 = vb2[sort_ind][~dupl_ind]
+            vb3 = vb3[sort_ind][~dupl_ind]
+            vb4 = vb4[sort_ind][~dupl_ind]
         # 5th beam velocity and time
         vb5 = mat['Data']['IBurst_VelBeam5'].item().squeeze()
         tb5 = mat['Data']['IBurst_Time'].item().squeeze()
         # Convert to datetime
         tb5 = pd.Series(pd.to_datetime(tb5-719529, unit='D'))
         tb5 = tb5.dt.to_pydatetime()
+        # Check for duplicates in tb5
+        tb5_ind = pd.Index(tb5)
+        if tb5_ind.duplicated().any() == True:
+            print('{} duplicates found in tb5'.format(np.sum(
+                tb5_ind.duplicated())))
+            print('duplicates: ', tb5[tb5_ind.duplicated()])
+            # Get sorting and duplicate indices
+            sort_ind5 = np.argsort(tb5_ind)
+            dupl_ind5 = tb5_ind[sort_ind5].duplicated(keep='last')
+            # Sort and remove duplicate(s) from time_arr
+            tb5 = tb5[sort_ind5][~dupl_ind5]
+            tb5_ind = pd.Index(tb5)
+            print('after removal of dupl.: {} left'.format(np.sum(
+                tb5_ind.duplicated())))
+            # Remove duplicates also from vb5
+            vb5 = vb5[sort_ind5][~dupl_ind5]
         # Convert to DataArray for interpolation
         da5 = xr.DataArray(vb5,
                            coords=[tb5, np.arange(28)],
@@ -294,12 +337,19 @@ class ADCP():
         vN = mat['Data']['Burst_VelNorth'].item().squeeze()
         vU1 = mat['Data']['Burst_VelUp1'].item().squeeze()
         vU2 = mat['Data']['Burst_VelUp2'].item().squeeze()
+        # Remove duplicate(s) if applicable
+        if duplicates == True:
+            vE = vE[sort_ind][~dupl_ind]
+            vN = vN[sort_ind][~dupl_ind]
+            vU1 = vU1[sort_ind][~dupl_ind]
+            vU2 = vU2[sort_ind][~dupl_ind]
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
         # Transducer height above bottom (based on Olavo Badaro-Marques'
         # script Signature1000_proc_lvl_1.m)
-        trans_hab = 31.88 / 100 # [m]
+        # trans_hab = 31.88 / 100 # [m]
+        trans_hab = self.zp # [m]
         # Cell size in meters
         binsz = mat['Config']['Burst_CellSize'].item().squeeze()
         # Check that bin size is consistent with self.binsz
@@ -317,10 +367,29 @@ class ADCP():
 
         # Acoustic surface tracking distance - AST
         ast = mat['Data']['Burst_AltimeterDistanceAST'].item().squeeze()
+        # Add transducer height to AST distance
+        ast += self.zp
         # Interpolate AST to general time stamps using AST time offsets
         time_ast = pd.Series(pd.to_datetime(time_mat-719529, unit='D'))
-        # Add AST time offsets (fractions of sec) to time array
         ast_offs = mat['Data']['Burst_AltimeterTimeOffsetAST'].item().squeeze()
+        # Check for duplicates in time_ast
+        time_ast_ind = pd.Index(time_ast)
+        if time_ast_ind.duplicated().any() == True:
+            print('{} duplicates found in time_ast'.format(np.sum(
+                time_ast_ind.duplicated())))
+            print('duplicates: ', time_ast[time_ast_ind.duplicated()])
+            # Get sorting and duplicate indices
+            sort_ind_ast = np.argsort(time_ast_ind)
+            dupl_ind_ast = time_ast_ind[sort_ind_ast].duplicated(keep='last')
+            # Sort and remove duplicate(s) from time_arr
+            time_ast = pd.Series(time_ast.values[sort_ind_ast][~dupl_ind_ast])
+            time_ast_ind = pd.Index(time_ast)
+            print('after removal of dupl.: {} left'.format(np.sum(
+                time_ast_ind.duplicated())))
+            # Remove duplicates also from ast
+            ast = ast[sort_ind_ast][~dupl_ind_ast]
+            ast_offs = ast_offs[sort_ind_ast][~dupl_ind_ast]
+        # Add AST time offsets (fractions of sec) to time array
         for i, offs in enumerate(ast_offs):
             time_ast[i] += pd.Timedelta(seconds=offs)        
         # Change time format to match time_arr
@@ -375,7 +444,10 @@ class ADCP():
                     df_ast['des'].loc[t0ss:t1ss] = seg_d
                     if t0ss >= self.t0:
                         # Save eta of despiked segment to correct indices in df_ast
-                        df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg_d)
+                        if not np.sum(np.isnan(seg_d)):
+                            df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg_d)
+                        else:
+                            df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg)
                         # Save eta of despiked segment to correct indices in df_ast
                         df_ast['raw_eta'].loc[t0ss:t1ss] = detrend(seg)
                 # Save dataframe to csv
@@ -396,13 +468,13 @@ class ADCP():
                 vb2d = np.ones_like(vb2) * np.nan
                 vb3d = np.ones_like(vb3) * np.nan
                 vb4d = np.ones_like(vb4) * np.nan
-                vb5d = np.ones_like(vb5) * np.nan
+                vb5d = np.ones_like(vb5i) * np.nan
                 # Save despiked velocities in dsb Dataset
                 dsb = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
                                             'vb2': (['time', 'z'], vb2),
                                             'vb3': (['time', 'z'], vb3), 
                                             'vb4': (['time', 'z'], vb4),
-                                            'vb5': (['time', 'z'], vb5),
+                                            'vb5': (['time', 'z'], vb5i),
                                             'vb1d': (['time', 'z'], vb1d), 
                                             'vb2d': (['time', 'z'], vb2d),
                                             'vb3d': (['time', 'z'], vb3d), 
@@ -451,15 +523,34 @@ class ADCP():
             else:
                 # Read pre-saved despiked velocity netcdf file
                 dsb = xr.open_dataset(fn_vel_desp)
-        
-        # Convert despiked beam velocities to E,N,U coordinates
+        else:
+            # Don't use despiked velocities
+            dsb = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
+                                        'vb2': (['time', 'z'], vb2),
+                                        'vb3': (['time', 'z'], vb3), 
+                                        'vb4': (['time', 'z'], vb4),
+                                        'vb5': (['time', 'z'], vb5i),
+                                        },
+                            coords={'time': (['time'], time_arr),
+                                    'z': (['z'], np.arange(28))
+                                    },
+                            )
+    
+        # Convert (non-)despiked beam velocities to E,N,U coordinates
         # Note order and sign of beams!!!
-        beam_arr_d = np.array([-dsb.vb1d, -dsb.vb3d, -dsb.vb4d, -dsb.vb2d, -dsb.vb5d])
-        enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading, 
-                                  pitch=pitch, roll=roll)
-
+        if despike_vel:
+            beam_arr_d = np.array([-dsb.vb1d, -dsb.vb3d, -dsb.vb4d, -dsb.vb2d, -dsb.vb5d])
+            enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading, 
+                                    pitch=pitch, roll=roll)
+        else:
+            beam_arr_d = np.array([-dsb.vb1, -dsb.vb3, -dsb.vb4, -dsb.vb2, -dsb.vb5])
+            enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading, 
+                                      pitch=pitch, roll=roll)
         # Also read pressure and reconstruct linear sea-surface elevation
         pres = mat['Data']['Burst_Pressure'].item().squeeze()
+        # Remove duplicate(s) if applicable
+        if duplicates == True:
+            pres = pres[sort_ind][~dupl_ind]
         # Make pd.Series and convert to eta
         pres = pd.Series(pres, index=time_arr)
         # Convert pressure to hydrostatic & linear surface
@@ -507,11 +598,14 @@ class ADCP():
                                          krms=dsbs.k_rms.values, 
                                          f_krms=dsbs.freq.values,
                                          fmax=2.0)
-                dfp['eta_lin_krms'].loc[t0ss:t1ss] = df_seg['eta_lin_krms'].copy()
-                dfp['eta_nl_krms'].loc[t0ss:t1ss] = df_seg['eta_nl_krms'].copy()
+                dfp['eta_lin_krms'].loc[t0ss:t1ss] = df_seg['eta_lin_krms'].values
+                dfp['eta_nl_krms'].loc[t0ss:t1ss] = df_seg['eta_nl_krms'].values
 
         # Also read temperature time series
         temp = mat['Data']['Burst_Temperature'].item().squeeze()
+        # Remove duplicate(s) if applicable
+        if duplicates == True:
+            temp = temp[sort_ind][~dupl_ind]
 
         # Define variable dictionary for output dataset
         data_vars={'vB1': (['time', 'range'], vb1), # Beam coord. vel.
@@ -524,6 +618,11 @@ class ADCP():
                    'vN': (['time', 'range'], vN),
                    'vU1': (['time', 'range'], vU1),
                    'vU2': (['time', 'range'], vU2),
+                   # ENU from HPR and (non-)despiked beam velocities
+                   'vEhpr': (['time', 'range'], enu_vel_d[0,:,:]),
+                   'vNhpr': (['time', 'range'], enu_vel_d[1,:,:]),
+                   'vU1hpr': (['time', 'range'], enu_vel_d[2,:,:]),
+                   'vU2hpr': (['time', 'range'], enu_vel_d[3,:,:]),
                    # Raw AST 
                    'ASTr': (['time'], df_ast['raw'].values),
                    'ASTr_eta': (['time'], df_ast['raw_eta'].values),
@@ -555,11 +654,6 @@ class ADCP():
             data_vars['vB3d'] = (['time', 'range'], dsb['vb3d'].values)
             data_vars['vB4d'] = (['time', 'range'], dsb['vb4d'].values)
             data_vars['vB5d'] = (['time', 'range'], dsb['vb5d'].values)
-            # ENU from HPR and despiked beam velocities
-            data_vars['vEhpr'] = (['time', 'range'], enu_vel_d[0,:,:])
-            data_vars['vNhpr'] = (['time', 'range'], enu_vel_d[1,:,:])
-            data_vars['vU1hpr'] = (['time', 'range'], enu_vel_d[2,:,:]) 
-            data_vars['vU2hpr'] = (['time', 'range'], enu_vel_d[3,:,:])
 
         # Make output dataset and save to netcdf
         ds = xr.Dataset(data_vars=data_vars,
@@ -652,7 +746,7 @@ class ADCP():
             mask - boolean spike mask where 0 means bad sample.
         """
         # Copy input array
-        z_train = arr.copy() 
+        z_train = np.array(arr.copy())
 
         # Set GP length scale bounds based on sampling frequency
         bmin = self.fs # Lower bound (number of samples)
@@ -803,7 +897,7 @@ class ADCP():
         pressure.
 
         Parameters:
-            pt - pd.Series; time series of water pressure
+            pt - pd.Series; time series of water pressure [dbar]
             rho0 - scalar; water density (kg/m^3)
             grav - scalar; gravitational acceleration (m/s^2)
             M - int; window segment length (512 by default)
@@ -869,7 +963,6 @@ class ADCP():
 
         # Apply linear transfer function from p->eta
         trf = rptf.TRF(fs=self.fs, zp=self.zp)
-        print('len z_hyd: ', len(df_out['z_hyd'].values))
         eL, eNL = trf.p2eta_krms(df_out['z_hyd'].values, h0=h0, krms=krms, 
                                  f_krms=f_krms)
         # Save reconstructed surfaces to output dataframe
@@ -884,7 +977,7 @@ class ADCP():
         return df_out
 
         
-    def wavespec(self, ds, u='vEhpr', v='vNhpr', z='ASTd', seglen=1200, 
+    def wavespec(self, ds, u='vE', v='vN', z='ASTd', seglen=1200, 
                  fmin=0.05, fmax=0.33):
         """
         Estimate wave spectra from ADCP data in the input dataset ds.
@@ -908,10 +1001,9 @@ class ADCP():
         Returns:
             dss_concat - combined dataset of spectral segments
         """
-        # Interpolate over possible dropouts in AST signal
+        # Interpolate over possible dropouts in surface signal
         zA = ds[z].interpolate_na(dim='time', fill_value="extrapolate").values
         zA = pd.Series(zA, index=ds.time.values)
-        print('sumNA zA: ', np.sum(np.isnan(zA)))
 
         # Count number of full 20-minute (1200-sec) segments
         t0s = pd.Timestamp(zA.index[0]) # Start timestamp
@@ -928,10 +1020,12 @@ class ADCP():
             ds_seg = ds.sel(time=slice(t0ss, t1ss))
             # Estimate depth from surface of contamination region
             zic = self.contamination_range(binsz=self.binsz, ha=seg.min())
+            # Take ASTd segment and use that for z_opt
+            seg_ast = ds['ASTd'].sel(time=slice(t0ss, t1ss))
             # Get optimal velocity range bin number following Lentz et al. (2021)
             # Use 'bfill' to be conservative (round up)
-            z_opt = seg.min() - ds_seg.sel(range=zic,
-                                           method='bfill').range.item()
+            z_opt = seg_ast.min() - ds_seg.sel(range=zic,
+                                               method='bfill').range.item()
             # Save range cell value
             range_val = ds_seg.sel(range=z_opt,
                                    method='nearest').range.item() 
@@ -940,10 +1034,22 @@ class ADCP():
                 fill_value="extrapolate").sel(range=z_opt, 
                                               method='nearest').values
             vEd = pd.Series(vEd, index=seg.index)
+            if np.sum(np.isnan(vEd)) > 0:
+                # Use non-despiked segment if this one has NaNs
+                vEd = ds_seg['vE'].interpolate_na(dim='time',
+                    fill_value="extrapolate").sel(range=z_opt, 
+                                                method='nearest').values
+                vEd = pd.Series(vEd, index=seg.index)
             vNd = ds_seg[v].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
                                               method='nearest').values
             vNd = pd.Series(vNd, index=seg.index)
+            if np.sum(np.isnan(vNd)) > 0:
+                # Use non-despiked segment if this one has NaNs
+                vNd = ds_seg['vN'].interpolate_na(dim='time',
+                    fill_value="extrapolate").sel(range=z_opt, 
+                                                method='nearest').values
+                vNd = pd.Series(vNd, index=seg.index)
             # Estimate spectra from 20-min. segments
             dss = rpws.spec_uvz(z=seg, 
                                 u=vEd, 
@@ -956,7 +1062,7 @@ class ADCP():
             # Add range value to output dataset
             dss['vel_binh'] = (['time'], np.atleast_1d(range_val))
             # Add mean water depth value to output dataset
-            seg_d = ds_seg.z_hyd.values # Hydrostatic depth of segment
+            seg_d = ds_seg.ASTd.values # Depth of segment from ASTd
             dss['water_depth'] = (['time'], np.atleast_1d(np.mean(seg_d)))
             # Append to list
             dss_list.append(dss)
@@ -967,7 +1073,7 @@ class ADCP():
 
 
     def save_vel_nc(self, ds, fn, overwrite=False, fillvalue=-9999.,
-                    ref_date=pd.Timestamp('2022-06-25'), ):
+                    ref_date=pd.Timestamp('2022-06-25'), despike_vel=False):
         """
         Save velocity/AST/pressure dataset ds to netcdf format.
 
@@ -1018,6 +1124,9 @@ class ADCP():
         ds.time.attrs['units'] = time_units
         ds.time.attrs['standard_name'] = 'time'
         ds.time.attrs['long_name'] = 'Local time (PDT)'
+        ds.range.attrs['units'] = 'm'
+        ds.range.attrs['standard_name'] = 'range'
+        ds.range.attrs['long_name'] = 'Velocity bin distance from seabed'
 
         # Variables
         ds.vB1.attrs['standard_name'] = 'sea_water_beam_velocity'
@@ -1035,22 +1144,23 @@ class ADCP():
         ds.vB5.attrs['standard_name'] = 'sea_water_beam_velocity'
         ds.vB5.attrs['long_name'] = 'Raw ADCP beam 5 velocity'
         ds.vB5.attrs['units'] = 'm/s'
-        # Despiked beam velocities
-        ds.vB1d.attrs['standard_name'] = 'sea_water_beam_velocity'
-        ds.vB1d.attrs['long_name'] = 'Despiked ADCP beam 1 velocity'
-        ds.vB1d.attrs['units'] = 'm/s'
-        ds.vB2d.attrs['standard_name'] = 'sea_water_beam_velocity'
-        ds.vB2d.attrs['long_name'] = 'Despiked ADCP beam 2 velocity'
-        ds.vB2d.attrs['units'] = 'm/s'
-        ds.vB3d.attrs['standard_name'] = 'sea_water_beam_velocity'
-        ds.vB3d.attrs['long_name'] = 'Despiked ADCP beam 3 velocity'
-        ds.vB3d.attrs['units'] = 'm/s'
-        ds.vB4d.attrs['standard_name'] = 'sea_water_beam_velocity'
-        ds.vB4d.attrs['long_name'] = 'Despiked ADCP beam 4 velocity'
-        ds.vB4d.attrs['units'] = 'm/s'
-        ds.vB5d.attrs['standard_name'] = 'sea_water_beam_velocity'
-        ds.vB5d.attrs['long_name'] = 'Despiked ADCP beam 5 velocity'
-        ds.vB5d.attrs['units'] = 'm/s'
+        if despike_vel:
+            # Despiked beam velocities
+            ds.vB1d.attrs['standard_name'] = 'sea_water_beam_velocity'
+            ds.vB1d.attrs['long_name'] = 'Despiked ADCP beam 1 velocity'
+            ds.vB1d.attrs['units'] = 'm/s'
+            ds.vB2d.attrs['standard_name'] = 'sea_water_beam_velocity'
+            ds.vB2d.attrs['long_name'] = 'Despiked ADCP beam 2 velocity'
+            ds.vB2d.attrs['units'] = 'm/s'
+            ds.vB3d.attrs['standard_name'] = 'sea_water_beam_velocity'
+            ds.vB3d.attrs['long_name'] = 'Despiked ADCP beam 3 velocity'
+            ds.vB3d.attrs['units'] = 'm/s'
+            ds.vB4d.attrs['standard_name'] = 'sea_water_beam_velocity'
+            ds.vB4d.attrs['long_name'] = 'Despiked ADCP beam 4 velocity'
+            ds.vB4d.attrs['units'] = 'm/s'
+            ds.vB5d.attrs['standard_name'] = 'sea_water_beam_velocity'
+            ds.vB5d.attrs['long_name'] = 'Despiked ADCP beam 5 velocity'
+            ds.vB5d.attrs['units'] = 'm/s'
         # ENU velocities from Nortek
         ds.vE.attrs['standard_name'] = 'eastward_sea_water_velocity'
         ds.vE.attrs['long_name'] = 'Eastward velocity from Nortek software'
@@ -1127,14 +1237,15 @@ class ADCP():
 
        # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
-                             'Signature1000 data from mooring ID {}'.format(self.mid))
+                             'Signature1000 data from serial number {}'.format(self.ser))
         ds.attrs['summary'] = ('Nortek Signature 1000 velocity, surface elevation and ' +
                                'temperature measurements from instrument ' + 
-                               'with serial number {} located at Asilomar small-scale array ' + 
-                               'mooring site {}.'.format(self.ser, self.mid))
+                               'located at Asilomar small-scale array ' + 
+                               'mooring site {}.'.format(self.mid))
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
+        ds.attrs['transducer_height'] = '{} m'.format(self.zp)
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
             comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
@@ -1158,7 +1269,7 @@ class ADCP():
                    }     
         # Set variable fill values
         for k in list(ds.keys()):
-            encoding[k] = {'_Fillvalue': fillvalue}
+            encoding[k] = {'_FillValue': fillvalue}
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
@@ -1262,7 +1373,7 @@ class ADCP():
         ds.vel_binh.attrs['long_name'] = 'horizontal velocity bin center height above seabed'
         ds.water_depth.attrs['units'] = 'm'
         ds.water_depth.attrs['standard_name'] = 'depth'
-        ds.water_depth.attrs['long_name'] = 'Mean water depth from hydrostatic pressure head'
+        ds.water_depth.attrs['long_name'] = 'Mean water depth from AST'
         ds.Hm0.attrs['units'] = 'm'
         ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
         ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
@@ -1337,6 +1448,7 @@ class ADCP():
         ds.attrs['instrument'] = 'Nortek Signature 1000'
         ds.attrs['mooring_ID'] = self.mid
         ds.attrs['serial_number'] = self.ser
+        ds.attrs['transducer_height'] = '{} m'.format(self.zp)
         ds.attrs['segment_length'] = '1200 seconds'
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
@@ -1361,13 +1473,11 @@ class ADCP():
                    }
         # Set variable fill values
         for k in list(ds.keys()):
-            encoding[k] = {'_Fillvalue': fillvalue}
+            encoding[k] = {'_FillValue': fillvalue}
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
         ds.to_netcdf(fn, encoding=encoding)
-
-
 
 
 # Main script
@@ -1494,12 +1604,6 @@ if __name__ == '__main__':
         # Only process one serial number
         sers = [args.ser]
 
-#     # UVZ spectra test
-#     df = pd.read_csv('test_uvz.csv', parse_dates=['time']).set_index('time')
-#     dss = rpws.spec_uvz(z=df['z'].values, u=df['u'].values, 
-#         v=df['v'].values, fs=4, fmin=0.05, fmax=0.33, 
-#         timestamp=pd.Timestamp(df.index[0].round('1H')))
-
     # Read atmospheric pressure time series and calculate
     # atmospheric pressure anomaly
     fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
@@ -1510,14 +1614,14 @@ if __name__ == '__main__':
         mat_pres = mat['A']['atm_pres'].item().squeeze()
         mat_time = mat['A']['time_vec'].item().squeeze() # In Matlab char() format
         # Make into pandas dataframe
-        dfa = pd.DataFrame(data={'hpa':mat_pres}, 
+        dfa = pd.DataFrame(data={'dbar':mat_pres}, 
                            index=pd.to_datetime(mat_time))
         dfa.index.rename('time', inplace=True)
-        # convert from mbar to hpa
-        dfa['hpa'] /= 100
-        dfa['hpa'] -= 0.032 # Empirical correction factor
+        # convert from mbar to dbar
+        dfa['dbar'] /= 100
+        dfa['dbar'] -= 0.032 # Empirical correction factor
         # Calculate anomaly from mean
-        dfa['hpa_anom'] = dfa['hpa'] - dfa['hpa'].mean()
+        dfa['dbar_anom'] = dfa['dbar'] - dfa['dbar'].mean()
         # Save as csv
         dfa.to_csv(fn_patm)
     else:
@@ -1594,7 +1698,7 @@ if __name__ == '__main__':
 
         # Initialize class
         adcp = ADCP(datadir=datadir, ser=ser, mooring_info=fn_minfo, 
-                    outdir=outdir, patm=dfa)
+                    outdir=outdir, patm=dfa, bathy=dsb)
         # Save all datasets for the same date in list for concatenating
         dsv_daily = [] # Velocities and 1D (eg AST) data
         dse_daily = [] # Echogram data
@@ -1646,9 +1750,9 @@ if __name__ == '__main__':
                         dsd = dsd.sel(time=slice(adcp.t0, None))
 
                     if not os.path.isfile(fn_nc0):
-                        print('Saving daily dataset for {} to netCDF ...'.format(
-                            date0))
-                        dsd.to_netcdf(fn_nc0)
+                        print('Saving daily dataset for {} to netCDF {} ...'.format(
+                            date0, os.path.split(fn_nc0)[1]))
+                        adcp.save_vel_nc(dsd, fn_nc0)
             
                     # Estimate 20-min. wave spectra from AST
                     fn_spec_ast = os.path.join(specdir, 
@@ -1700,8 +1804,6 @@ if __name__ == '__main__':
                         # Save spectra to netCDF
                         adcp.save_spec_nc(dss_daily, fn=fn_spec_zh, z_var='z_hyd')
 
-
-
                     # Make new empty list and append the following day
                     dsv_daily = []
                     dsv1 = dsv.sel(time=date1).copy()
@@ -1712,7 +1814,7 @@ if __name__ == '__main__':
                     if not os.path.isfile(fn_nc0):
                         print('Saving last dataset for {} to netCDF ...'.format(
                             date0))
-                        dsd.to_netcdf(fn_nc0)
+                        adcp.save_vel_nc(dsd, fn_nc0)
 
                     # Estimate 20-min. wave spectra from AST
                     fn_spec_ast = os.path.join(specdir, 
