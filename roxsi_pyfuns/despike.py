@@ -330,8 +330,10 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
         gp = gaussian_process.GaussianProcessRegressor(
             kernel=kernel)
         # Train GP process on data
+        if len (x_train) == 0 and len(y_train) == 0:
+            continue
         gp.fit(np.array(x_train).reshape(-1,1), 
-                np.array(y_train).reshape(-1,1))
+               np.array(y_train).reshape(-1,1))
         gp.kernel_
         if print_kernel:
             print('GP kernel (sklearn): ', gp.kernel_)
