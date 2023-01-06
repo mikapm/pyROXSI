@@ -343,7 +343,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         Dp = dirs[fpind] # Dominant (peak) direction, use peak f
         # Screen for bad direction estimate,     
         inds = fpind + np.array([-1, 0, 1]) # pick neighboring bands
-        if np.all(inds>0) and np.max(inds) <= len(dirs): 
+        if np.all(inds>0) and np.max(inds) < len(dirs): 
             dirnoise = np.std(dirs[inds])
             if dirnoise > 45:
                 # Directions too noisy -> save NaN
@@ -642,8 +642,6 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     freqs = freqs[ifrm]
     df = np.abs(freqs[1]-freqs[0])
 
-
-
     # Generate output dataset
     if timestamp is not None:
         data_vars={'B': (['freq', 'freq'], Bm),
@@ -682,11 +680,11 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
                                 },
                         )
     if return_krms:
-        # Also compute rms wavenumbers K_rms following Herbers et al. (2000)
+        # Also compute rms wavenumbers K_rms following Herbers et al. (2002)
         krms = rptf.k_rms(h0=h0, f=freqs, P=Pm, B=Bm)
         dsb['k_rms'] = (['freq'], krms)
         dsb['k_rms'].attrs['standard_name'] = 'sea_surface_wave_rms_wavenumber'
-        dsb['k_rms'].attrs['long_name'] = 'Root-mean-square wavenumbers following Herbers et al. (2000)'
+        dsb['k_rms'].attrs['long_name'] = 'Root-mean-square wavenumbers following H02'
         dsb['k_rms'].attrs['units'] = '1/m'
     # Save some attributes
     dsb.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
