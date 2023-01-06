@@ -13,6 +13,27 @@ from roxsi_pyfuns import wave_spectra as rpws
 from roxsi_pyfuns import zero_crossings as rpzc
 
 
+class ChainedAssignent:
+    """
+    Class/function borrowed from https://stackoverflow.com/questions/20625582/
+    how-to-deal-with-settingwithcopywarning-in-pandas/53954986#53954986
+
+    Used to suppress SettingWithCopyWarning with pandas.
+    """
+    def __init__(self, chained=None):
+        acceptable = [None, 'warn', 'raise']
+        assert chained in acceptable, "chained must be in " + str(acceptable)
+        self.swcw = chained
+
+    def __enter__(self):
+        self.saved_swcw = pd.options.mode.chained_assignment
+        pd.options.mode.chained_assignment = self.swcw
+        return self
+
+    def __exit__(self, *args):
+        pd.options.mode.chained_assignment = self.saved_swcw
+
+
 def waveno_deep(omega):
     """
     Returns wavenumber array assuming linear deep water 
@@ -107,8 +128,9 @@ def z_hydrostatic(pt, patm=None, rho0=1025, grav=9.81, interp=True):
     factor = rho0 * grav / 10000.0
     # Remove negative values
     ii = np.where(df['z_hyd']<0)[0]
-    df['z_hyd'][ii] = 0
-    df['z_hyd'] /= factor # Pressure head, unit [m]
+    with ChainedAssignent():
+        df['z_hyd'][ii] = 0
+        df['z_hyd'] /= factor # Pressure head, unit [m]
 
     return df['z_hyd']
 
