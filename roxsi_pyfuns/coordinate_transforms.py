@@ -4,13 +4,13 @@ Functions to perform various coordinate transforms.
 
 import numpy as np
 
+
 def rotate_zgrid(xg, yg, zg, angle_rad):
     """
     Rotate 2D grid with z coordinates by angle given by angle_rad (in radians). 
 
-    Borrowed from hpaulj at 
-    https://stackoverflow.com/questions/31816754/numpy-einsum-for-rotation-of-
-    meshgrid
+    Borrowed from user 'hpaulj' at 
+    https://stackoverflow.com/questions/31816754/numpy-einsum-for-rotation-of-meshgrid
 
     Parameters:
         xg - 2D array of x coordinates
@@ -47,8 +47,22 @@ def rotate_zgrid(xg, yg, zg, angle_rad):
         zrot[zrot==-999.] = np.nan
 
     return xrot, yrot, zrot
-    
 
+
+def rotate_xygrid(xspan, yspan, RotRad=0):
+    """
+    Generate a meshgrid and rotate it by RotRad radians.
+
+    Borrowed from user 'wilywampa' at
+    https://stackoverflow.com/questions/29708840/rotate-meshgrid-with-numpy
+    """
+
+    # Clockwise, 2D rotation matrix
+    RotMatrix = np.array([[np.cos(RotRad),  np.sin(RotRad)],
+                          [-np.sin(RotRad), np.cos(RotRad)]])
+
+    x, y = np.meshgrid(xspan, yspan)
+    return np.einsum('ji, mni -> jmn', RotMatrix, np.dstack([x, y]))
 
 
 def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
