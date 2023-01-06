@@ -25,6 +25,27 @@ from roxsi_pyfuns import coordinate_transforms as rpct
 from roxsi_pyfuns import wave_spectra as rpws
 
 
+class ChainedAssignent:
+    """
+    Class/function borrowed from https://stackoverflow.com/questions/20625582/
+    how-to-deal-with-settingwithcopywarning-in-pandas/53954986#53954986
+
+    Used to suppress SettingWithCopyWarning with pandas.
+    """
+    def __init__(self, chained=None):
+        acceptable = [None, 'warn', 'raise']
+        assert chained in acceptable, "chained must be in " + str(acceptable)
+        self.swcw = chained
+
+    def __enter__(self):
+        self.saved_swcw = pd.options.mode.chained_assignment
+        pd.options.mode.chained_assignment = self.swcw
+        return self
+
+    def __exit__(self, *args):
+        pd.options.mode.chained_assignment = self.saved_swcw
+
+
 def max_runlen(arr, value):
      """
      Find runs of consecutive items in an array.
@@ -55,6 +76,7 @@ def max_runlen(arr, value):
          max_run = np.max(run_lengths[run_values==value]) 
 
          return max_run 
+
 
 class ADCP():
     """
@@ -128,7 +150,6 @@ class ADCP():
         self.lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
 
 
-
     def _fns_from_ser(self):
         """
         Returns a list of .mat filenames in self.datadir corresponding
@@ -136,7 +157,35 @@ class ADCP():
         """
         # List all .mat files with serial number in filename
         self.fns = sorted(glob.glob(os.path.join(self.datadir,
-            '*S{}A001*.mat'.format(self.ser))))
+            '*S{}A00*.mat'.format(self.ser))))
+
+        # If serial number is 103206, find correct order of .mat files
+        # based on dates
+        if self.ser == '103206':
+            # Check if sort indices already saved
+            fn_sort_ind = os.path.join(self.datadir, 'sort_ind_mat_{}.csv'.format(
+                self.ser))
+            if not os.path.isfile(fn_sort_ind):
+                print('Getting correct order order of .mat files ...')
+                date_list = [] # List for first timestamp of each .mat file
+                # Iterate over .mat files, get timestamps
+                for fn in tqdm(self.fns):
+                    _, times = self.read_mat_times(fn_mat=fn)
+                    # Append first timestamp to list
+                    date_list.append(times[0])
+                # Get sorting indices of date list
+                sort_ind = np.argsort(date_list).astype(int)
+                # Save sorting indices for later use
+                dfs = pd.Series(data=sort_ind)
+                dfs.to_csv(fn_sort_ind)
+            else:
+                # Read sorting indices from pre-saved file
+                print('Reading sorting indices from file ...')
+                dfs = pd.read_csv(fn_sort_ind, index_col=0)
+                sort_ind = dfs.values.astype(int).squeeze()
+            # Sort self.fns in correct order
+            self.fns = np.array(self.fns)[sort_ind].tolist()
+
 
     def read_mat_times(self, mat=None, fn_mat=None):
         """
@@ -170,7 +219,8 @@ class ADCP():
 
         return time_mat, time_arr
 
-    def contamination_range(self, ha, binsz):
+
+    def contamination_range(self, ha):
         """
         Calculate range of velocity contamination due to sidelobe 
         reflections following Lentz et al. (2021, Jtech): 
@@ -188,13 +238,12 @@ class ADCP():
 
         Parameters:
             ha - distance from ADCP acoustic head to sea surface
-            binsz - binsize in meters
-            (beam angle is saved in self.beam_ang)
+            (beam angle and bin size are saved in self.beam_ang and self.binsz)
 
         Returns:
             zic - depth below the surface of the contaminated region
         """
-        zic = ha * (1 - np.cos(self.beam_ang)) + 3 * binsz / 2
+        zic = ha * (1 - np.cos(self.beam_ang)) + 3 * self.binsz / 2
         return zic
 
 
@@ -264,15 +313,16 @@ class ADCP():
         heading = mat['Data']['Burst_Heading'].item().squeeze()
         pitch = mat['Data']['Burst_Pitch'].item().squeeze()
         roll = mat['Data']['Burst_Roll'].item().squeeze()
+        pres = mat['Data']['Burst_Pressure'].item().squeeze()
         # Remove possible duplicates
         if duplicates == True:
             heading = heading[sort_ind][~dupl_ind]
             pitch = pitch[sort_ind][~dupl_ind]
             roll = roll[sort_ind][~dupl_ind]
+            pres = pres[sort_ind][~dupl_ind]
 
         # If requesting only H,D,R timeseries, return dataframe
         if only_hpr:
-            pres = mat['Data']['Burst_Pressure'].item().squeeze()
             df_hpr = pd.DataFrame(data={'heading_ang':heading, 
                                         'pitch_ang':pitch, 
                                         'roll_ang':roll, 
@@ -573,8 +623,9 @@ class ADCP():
             t1ss = pd.Timestamp(seg.index[-1])
             # Detrend z_hyd and z_lin segments to get eta_hyd and eta_lin
             seg_hyd = dfp['z_hyd'].loc[t0ss:t1ss].copy()
-            dfp['eta_hyd'].loc[t0ss:t1ss] = detrend(seg_hyd).copy()
-            dfp['eta_lin'].loc[t0ss:t1ss] = detrend(seg).copy()
+            with ChainedAssignent():
+                dfp['eta_hyd'].loc[t0ss:t1ss] = detrend(seg_hyd).copy()
+                dfp['eta_lin'].loc[t0ss:t1ss] = detrend(seg).copy()
             if t0ss >= self.t0:
                 # Check if bispectrum already saved
                 dir_bisp = os.path.join(self.outdir, 'bispectra')
@@ -598,8 +649,10 @@ class ADCP():
                                          krms=dsbs.k_rms.values, 
                                          f_krms=dsbs.freq.values,
                                          fmax=2.0)
-                dfp['eta_lin_krms'].loc[t0ss:t1ss] = df_seg['eta_lin_krms'].values
-                dfp['eta_nl_krms'].loc[t0ss:t1ss] = df_seg['eta_nl_krms'].values
+                with ChainedAssignent():
+                    # Suppress SettingWithCopyError warnings
+                    dfp['eta_lin_krms'].loc[t0ss:t1ss] = df_seg['eta_lin_krms'].values
+                    dfp['eta_nl_krms'].loc[t0ss:t1ss] = df_seg['eta_nl_krms'].values
 
         # Also read temperature time series
         temp = mat['Data']['Burst_Temperature'].item().squeeze()
@@ -1019,7 +1072,7 @@ class ADCP():
             # Take time slice from dataset
             ds_seg = ds.sel(time=slice(t0ss, t1ss))
             # Estimate depth from surface of contamination region
-            zic = self.contamination_range(binsz=self.binsz, ha=seg.min())
+            zic = self.contamination_range(ha=seg.min())
             # Take ASTd segment and use that for z_opt
             seg_ast = ds['ASTd'].sel(time=slice(t0ss, t1ss))
             # Get optimal velocity range bin number following Lentz et al. (2021)
@@ -1749,6 +1802,12 @@ if __name__ == '__main__':
                             pd.Timestamp(adcp.t0)))
                         dsd = dsd.sel(time=slice(adcp.t0, None))
 
+                    # Check if daily ds endtime is after dataset endtime
+                    if pd.Timestamp(dsd.time[-1].values) > pd.Timestamp(adcp.t1):
+                        print('Cropping daily dataset to end at {}'.format(
+                            pd.Timestamp(adcp.t1)))
+                        dsd = dsd.sel(time=slice(None, adcp.t1))
+
                     if not os.path.isfile(fn_nc0):
                         print('Saving daily dataset for {} to netCDF {} ...'.format(
                             date0, os.path.split(fn_nc0)[1]))
@@ -1811,6 +1870,11 @@ if __name__ == '__main__':
                 if i == (len(adcp.fns)-1):
                     # Last file, save last netcdf
                     dsd = xr.concat(dsv_daily, dim='time')
+                    # Check if daily ds endtime is after dataset endtime
+                    if pd.Timestamp(dsd.time[-1].values) > pd.Timestamp(adcp.t1):
+                        print('Cropping daily dataset to end at {}'.format(
+                            pd.Timestamp(adcp.t1)))
+                        dsd = dsd.sel(time=slice(None, adcp.t1))
                     if not os.path.isfile(fn_nc0):
                         print('Saving last dataset for {} to netCDF ...'.format(
                             date0))
