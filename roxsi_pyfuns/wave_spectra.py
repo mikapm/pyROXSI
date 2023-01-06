@@ -336,6 +336,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         # Take reciprocals such that wave direction is FROM, not TOWARDS
         dirs[westdirs] -= 180 
         dirs[eastdirs] += 180 
+        ds['dirs'] = (['freq'], spread)
         # Directional spread
         spread = 180 / 3.14 * spread1
         ds['dspr'] = (['freq'], spread)
