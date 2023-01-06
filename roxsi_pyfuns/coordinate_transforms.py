@@ -4,6 +4,53 @@ Functions to perform various coordinate transforms.
 
 import numpy as np
 
+def rotate_zgrid(xg, yg, zg, angle_rad):
+    """
+    Rotate 2D grid with z coordinates by angle given by angle_rad (in radians). 
+
+    Borrowed from hpaulj at 
+    https://stackoverflow.com/questions/31816754/numpy-einsum-for-rotation-of-
+    meshgrid
+
+    Parameters:
+        xg - 2D array of x coordinates
+        yg - 2D array of y coordinates
+        zg - 2D array of z coordinates
+        angle_rad - angle to rotate grid (radians) in math convention
+    
+    Returns:
+        xr - 2D array of rotated x coordinates
+        yr - 2D array of rotated y coordinates
+        zr - 2D array of rotated z coordinates
+    """
+    # Check if NaNs in zg
+    if np.sum(np.isnan(zg)):
+        nans = True
+        zg = np.nan_to_num(zg, nan=-999.)
+    else:
+        nans = False
+    # Stack grids
+    xyz = np.vstack([xg.ravel(), yg.ravel(), zg.ravel()]).T
+    # Make rotation matrix
+    sin = np.sin(angle_rad)
+    cos = np.cos(angle_rad)
+    rot = [[cos, sin, 0],
+           [-sin,  cos, 0],
+           [0, 0, 1]]
+    # Rotate 3D grid
+    xyz_r = np.einsum('ij,kj->ki', rot, xyz)
+    xrot = xyz_r[:,0].reshape(xg.shape)
+    yrot = xyz_r[:,1].reshape(yg.shape)
+    zrot = xyz_r[:,2].reshape(zg.shape)
+    # Put back potential NaNs in zr
+    if nans == True:
+        zrot[zrot==-999.] = np.nan
+
+    return xrot, yrot, zrot
+    
+
+
+
 def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
     """
     Transform velocities (u,v,w) from instrument coordinates 
@@ -70,7 +117,7 @@ def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
     
 
 def beam2enu(beam_vel, heading, pitch, roll, theta=25, nortek=True, 
-             deg_in=True, beam5=True):
+             deg_in=True, beam5=False):
     """
     Transform 5-beam ADCP velocities from beam coordinates
     to Earth (east, north, up) coordinates using heading,
