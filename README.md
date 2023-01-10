@@ -5,4 +5,12 @@ Functions and scripts for processing and analyzing data from the ROXSI experimen
 ```
 $ mamba env create -f environment.yml
 $ conda activate roxsi
+$ # Install pip libraries
+$ /home/mikapm/miniconda3/envs/roxsi/bin/pip install ssqueezepy
 ```
+
+## Update environment
+```
+mamba env update --file environment.yml --prune
+```
+
