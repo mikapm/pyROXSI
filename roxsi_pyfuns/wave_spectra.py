@@ -299,13 +299,21 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         Evv = ds['Evv'] / (2 * 3.14 * f)**2  # [m^2/Hz]
         # Check factor for circular orbits
         # In deep water (only), check = unity
-        check = (Euu + Evv) / ds['Ezz']
+        check = (Euu + Evv) / ds['Ezz'].values
         # Quad- and co-spectra
-        Quz = np.imag(uz) # [m^2/Hz], quadspec. of vert. and hor. displacements
+        Quz = np.imag(uz) # [m^2/Hz], quadrature-spec. of vert. and hor. displacements
         Cuz = np.real(uz) # [m^2/Hz], cospec. of vert. and hor. displacements
         Qvz = np.imag(vz) # [m^2/Hz], quadspec. of vert. and hor. displacements
         Cvz = np.real(vz) # [m^2/Hz], cospec. of vert. and hor. displacements
+        Quv = np.imag(uv) # [m^2/Hz], quadspec. of vert. and hor. displacements
         Cuv = np.real(uv) # [m^2/Hz], cospec. of hor. displacements
+        # Calculate coherence and phase
+        ds['coh_uz'] = (['freq'], np.abs(uz)**2 / (ds['Euu'].values * ds['Ezz'].values))
+        ds['coh_vz'] = (['freq'], np.abs(vz)**2 / (ds['Evv'].values * ds['Ezz'].values))
+        ds['coh_uv'] = (['freq'], np.abs(uv)**2 / (ds['Euu'].values * ds['Evv'].values))
+        ds['ph_uz'] = (['freq'], np.angle(uz))
+        ds['ph_vz'] = (['freq'], np.angle(vz))
+        ds['ph_uv'] = (['freq'], np.angle(uv))
         # Wave spectral moments 
         # Would use Qxz instead of Cuz etc. for actual displacements
         uu = ds['Euu'].values
@@ -336,7 +344,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         # Take reciprocals such that wave direction is FROM, not TOWARDS
         dirs[westdirs] -= 180 
         dirs[eastdirs] += 180 
-        ds['dirs'] = (['freq'], spread)
+        ds['dirs'] = (['freq'], dirs)
         # Directional spread
         spread = 180 / 3.14 * spread1
         ds['dspr'] = (['freq'], spread)
@@ -397,7 +405,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         ds['nu_LH57'] = ([], spec_bandwidth(E, f))
         if ndim == 3:
             # Peak direction
-            ds['Dp_ind'] = ([], Dp)
+            ds['Dp_ind'] = ([], np.atleast_1d(Dp).squeeze().item())
             # Peak direction at Y95 peak freq.
             indpy = (np.abs(f - fpy)).argmin()
             Dpy = dirs[indpy]
@@ -421,6 +429,30 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         ds['Dp_Y95'].attrs['fmax'] = fmax
 
     return ds
+
+
+def mspr(spec_xr):
+    """
+    Mean directional spread following Kuik (1988), coded by Jan Victor Björkqvist
+    """
+    freq = spec_xr.freq.values
+    theta = np.deg2rad(spec_xr.direction.values)
+    dD = 360/len(theta)
+    # Normalizing here so that integration over direction becomes summing
+    efth = spec_xr*dD*np.pi/180
+    ef = efth.sum(dim='direction')  # Omnidirection spectra
+    eth = efth.integrate(dim='freq')  # Directional distribution
+    m0 = ef.integrate(dim='freq')
+    c1 = ((np.cos(theta)*efth).sum(dim='direction'))  # Function of frequency
+    s1 = ((np.sin(theta)*efth).sum(dim='direction'))
+    a1m = c1.integrate(dim='freq')/m0  # Mean parameters
+    b1m = s1.integrate(dim='freq')/m0
+    thetam = np.arctan2(b1m,a1m)
+    m1 = np.sqrt(b1m**2 + a1m**2)
+    sprm = np.sqrt(2-2*(m1)).values*180/np.pi
+    dirm = np.mod(thetam.values*180/np.pi, 360)
+    spec = ef.values
+    return spec, dirm, sprm 
 
 
 def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', 
