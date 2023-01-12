@@ -33,7 +33,7 @@ def crossings_nonzero_neg2pos(data):
 
 
 # Function for zero-crossing wave-, crest-, and through heights 
-def get_waveheights(ts, method='down'):
+def get_waveheights(ts, method='down', zero_crossings=None):
     """
     Computes individual wave heights from signal ts.
 
@@ -48,6 +48,7 @@ def get_waveheights(ts, method='down'):
     Parameters:
         ts - time series; np or xr array of measurements
         method - str; 'up' for upward-zero crossings, 'down' for downward z.c.
+        zero_crossings - if None, use predefined zero-crossings
 
     Returns:
         zero_crossings - array of zero-crossing indices
@@ -58,18 +59,20 @@ def get_waveheights(ts, method='down'):
     # Make time series an np array just in case
     eta = np.array(ts)
 
-    # Find indices of downward zero crossings in eta
-    if method == 'down':
-        # Downward-zero crossings
-        zero_crossings = crossings_nonzero_pos2neg(eta)
-    elif method == 'up':
-        # Downward-zero crossings
-        zero_crossings = crossings_nonzero_neg2pos(eta)
-    # Add one to each index to get the correct intervals
-    if zero_crossings[-1] < (len(eta)-1):
-        zero_crossings += int(1)
-    else:
-        zero_crossings[:-1] += int(1)
+    # Get zero-crossings if not predefined
+    if zero_crossings is None:
+        # Find indices of downward zero crossings in eta
+        if method == 'down':
+            # Downward-zero crossings
+            zero_crossings = crossings_nonzero_pos2neg(eta)
+        elif method == 'up':
+            # Downward-zero crossings
+            zero_crossings = crossings_nonzero_neg2pos(eta)
+        # Add one to each index to get the correct intervals
+        if zero_crossings[-1] < (len(eta)-1):
+            zero_crossings += int(1)
+        else:
+            zero_crossings[:-1] += int(1)
 
     # Loop over the individual waves using zero-crossing indices
     Hc = [] # List for crest heights
