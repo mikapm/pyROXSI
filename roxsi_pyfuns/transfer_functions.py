@@ -87,7 +87,7 @@ def waveno_full(omega, d, k0=None, **kwargs):
     if k0 is None:
         k0 = waveno_shallow(omega, d)
     # Solve f(x) for intermediate water k using secant method
-    k = optimize.newton(f, k0, args=(omega, d))
+    k = optimize.newton(f, k0, args=(omega, d), **kwargs)
 
     return k
 
@@ -326,7 +326,7 @@ class TRF():
 
 
     def p2eta_krms(self, z_hyd, h0, tail_method='constant', fc=None, fc_fact=2.5,
-                   fmax=2.0, krms=None, f_krms=None, return_nl=True,
+                   fcmax_allowed=0.33, fmax=1.0, krms=None, f_krms=None, return_nl=True,
                    fix_ends=True):
         """
         Fully dispersive sea-surface reconstruction from sub-surface
@@ -345,6 +345,7 @@ class TRF():
                           function above cutoff frequency
             fc - scalar; cutoff frequency [Hz]
             fc_fact - scalar; factor to multiply fp to get fc if fc=None
+            fcmax_allowed - scalar; maximum allowable cutoff frequency
             fmax - scalar; max. frequency for FFT
             krms - array; root-mean-square wave number array following 
                    Herbers et al. (2002). If None, krms if computed from input
@@ -374,7 +375,10 @@ class TRF():
             dss = rpws.spec_uvz(eta_hyd, fs=self.fs)
             # Compute cutoff frequency from peak frequency
             fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
-            fc = fc_fact * fp
+            if fcmax_allowed is None:
+                fc = fc_fact * fp
+            else:
+                fc = np.min((fc_fact * fp, fcmax_allowed))
         else:
             # Set fp to None and compute it later from fft
             fp = None
