@@ -65,6 +65,25 @@ def rotate_xygrid(xspan, yspan, RotRad=0):
     return np.einsum('ji, mni -> jmn', RotMatrix, np.dstack([x, y]))
 
 
+def dirs_nautical(dtheta=2):
+    """
+    Make directional array in Nautical convention (compass dir from).
+    """
+    # Convert directions to nautical convention (compass dir FROM)
+    # Start with cartesian (a1 is positive east velocities, b1 is positive north)
+    theta = -np.arange(-180, 179, dtheta)  
+    # Rotate, flip and sort
+    theta += 90
+    theta[theta < 0] += 360
+    westdirs = (theta > 180)
+    eastdirs = (theta < 180)
+    # Take reciprocals such wave direction is FROM, not TOWARDS
+    theta[westdirs] -= 180
+    theta[eastdirs] += 180
+
+    return theta
+
+
 def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
     """
     Transform velocities (u,v,w) from instrument coordinates 
