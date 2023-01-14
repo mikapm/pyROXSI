@@ -612,6 +612,8 @@ class ADCP():
         # Martins et al. (2021). Requires rms wavenumbers and bispectrum.
         dfp['eta_lin_krms'] = np.ones_like(dfp['z_lin'].values) * np.nan
         dfp['eta_nl_krms'] = np.ones_like(dfp['z_lin'].values) * np.nan
+        dfp['eta_lin_krms_h'] = np.ones_like(dfp['z_lin'].values) * np.nan
+        dfp['eta_nl_krms_h'] = np.ones_like(dfp['z_lin'].values) * np.nan
         # Count number of full 20-minute (1200-sec) segments
         t0s = pd.Timestamp(dfp.index[0]) # Start timestamp
         t1s = pd.Timestamp(dfp.index[-1]) # End timestamp
@@ -645,14 +647,27 @@ class ADCP():
                     print('Reading bispectrum netcdf file {}'.format(fn_bisp))
                     dsbs = xr.open_dataset(fn_bisp, engine='h5netcdf')
                 # Reconstruct sea surface using rms wavenumbers and z_hyd
+                # Use tail_method='constant'
                 df_seg = self.p2eta_krms(seg_hyd, h0=dsbs.h0.item(), 
                                          krms=dsbs.k_rms.values, 
                                          f_krms=dsbs.freq.values,
-                                         fmax=2.0)
+                                         fmax=1.0,
+                                         tail_method='constant')
                 with ChainedAssignent():
                     # Suppress SettingWithCopyError warnings
                     dfp['eta_lin_krms'].loc[t0ss:t1ss] = df_seg['eta_lin_krms'].values
                     dfp['eta_nl_krms'].loc[t0ss:t1ss] = df_seg['eta_nl_krms'].values
+                # Reconstruct sea surface using rms wavenumbers and z_hyd
+                # Use tail_method='hydrostatic'
+                df_seg_h = self.p2eta_krms(seg_hyd, h0=dsbs.h0.item(), 
+                                           krms=dsbs.k_rms.values, 
+                                           f_krms=dsbs.freq.values,
+                                           fmax=1.0,
+                                           tail_method='hydrostatic')
+                with ChainedAssignent():
+                    # Suppress SettingWithCopyError warnings
+                    dfp['eta_lin_krms_h'].loc[t0ss:t1ss] = df_seg_h['eta_lin_krms'].values
+                    dfp['eta_nl_krms_h'].loc[t0ss:t1ss] = df_seg_h['eta_nl_krms'].values
 
         # Also read temperature time series
         temp = mat['Data']['Burst_Temperature'].item().squeeze()
@@ -687,6 +702,8 @@ class ADCP():
                    'eta_lin': (['time'], dfp['eta_lin']),
                    'eta_lin_krms': (['time'], dfp['eta_lin_krms']),
                    'eta_nl_krms': (['time'], dfp['eta_nl_krms']),
+                   'eta_lin_krms_h': (['time'], dfp['eta_lin_krms_h']),
+                   'eta_nl_krms_h': (['time'], dfp['eta_nl_krms_h']),
                    # Temperature (not calibrated?)
                    'temperature':  (['time'], temp),
                    # Heading, pitch, roll
@@ -720,8 +737,12 @@ class ADCP():
         ds.z_lin.attrs['fmax'] = '{} Hz'.format(fmax)
         ds.eta_lin.attrs['fmin'] = '{} Hz'.format(fmin)
         ds.eta_lin.attrs['fmax'] = '{} Hz'.format(fmax)
-        ds.eta_lin_krms.attrs['f_cutoff'] = '2.5 x fp'
-        ds.eta_nl_krms.attrs['f_cutoff'] = '2.5 x fp'
+        ds.eta_lin_krms.attrs['f_cutoff'] = '2.5 x fp or 0.33Hz'
+        ds.eta_nl_krms.attrs['f_cutoff'] = '2.5 x fp or 0.33Hz'
+        ds.eta_lin_krms.attrs['tail_method'] = 'constant'
+        ds.eta_nl_krms.attrs['tail_method'] = 'constant'
+        ds.eta_lin_krms_h.attrs['tail_method'] = 'hydrostatic'
+        ds.eta_nl_krms_h.attrs['tail_method'] = 'hydrostatic'
 
         return ds
 
@@ -1017,7 +1038,7 @@ class ADCP():
         # Apply linear transfer function from p->eta
         trf = rptf.TRF(fs=self.fs, zp=self.zp)
         eL, eNL = trf.p2eta_krms(df_out['z_hyd'].values, h0=h0, krms=krms, 
-                                 f_krms=f_krms)
+                                 f_krms=f_krms, **kwargs)
         # Save reconstructed surfaces to output dataframe
         df_out['eta_lin_krms'] = eL
         df_out['eta_nl_krms'] = eNL
@@ -1275,6 +1296,12 @@ class ADCP():
         ds.eta_nl_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         ds.eta_nl_krms.attrs['long_name'] = 'Non-linearly reconstructed sea surface elevation over 20-minute mean level following Martins et al. (2021)'
         ds.eta_nl_krms.attrs['units'] = 'm'
+        ds.eta_lin_krms_h.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_lin_krms_h.attrs['long_name'] = 'Linearly reconstructed sea surface elevation over 20-minute mean level following Martins et al. (2021)'
+        ds.eta_lin_krms_h.attrs['units'] = 'm'
+        ds.eta_nl_krms_h.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_nl_krms_h.attrs['long_name'] = 'Non-linearly reconstructed sea surface elevation over 20-minute mean level following Martins et al. (2021)'
+        ds.eta_nl_krms_h.attrs['units'] = 'm'
         ds.temperature.attrs['standard_name'] = 'sea_water_temperature'
         ds.temperature.attrs['long_name'] = 'Temperature recorded by ADCP'
         ds.temperature.attrs['units'] = 'degC'
@@ -1377,8 +1404,12 @@ class ADCP():
             z_str = 'linear pressure reconstruction'
         elif z_var == 'eta_lin_krms':
             z_str = 'linear pressure reconstruction using K_rms'
+        elif z_var == 'eta_lin_krms_h':
+            z_str = 'linear pressure reconstruction using K_rms (hydrostatic tail)'
         elif z_var == 'eta_nl_krms':
             z_str = 'nonlinear pressure reconstruction using K_rms'
+        elif z_var == 'eta_nl_krms_h':
+            z_str = 'nonlinear pressure reconstruction using K_rms (hydrostatic tail)'
         ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum from {}'.format(
             z_str)
         ds.Ezz.attrs['units'] = 'm^2/Hz'
@@ -1507,7 +1538,7 @@ class ADCP():
             ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
                                     'Sea-surface elevation is the linear sea-surface ' + 
                                     'reconstruction from pressure and K_rms following Martins ' +
-                                    'et al. (2021), and the ' + 
+                                    'et al. (2021) with constant tail method, and the ' + 
                                     'horizontal velocities are despiked E&N velocities ' +
                                     'from the range bin specified by the variable ' +
                                     'vel_binh.')
@@ -1515,7 +1546,23 @@ class ADCP():
             ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
                                     'Sea-surface elevation is the nonlinear sea-surface ' + 
                                     'reconstruction from pressure and K_rms following Martins ' +
-                                    'et al. (2021), and the ' + 
+                                    'et al. (2021) with constant tail method, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        elif z_var == 'eta_lin_krms':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the linear sea-surface ' + 
+                                    'reconstruction from pressure and K_rms following Martins ' +
+                                    'et al. (2021) with hydrostatic tail treatment, and the ' + 
+                                    'horizontal velocities are despiked E&N velocities ' +
+                                    'from the range bin specified by the variable ' +
+                                    'vel_binh.')
+        elif z_var == 'eta_nl_krms':
+            ds.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
+                                    'Sea-surface elevation is the nonlinear sea-surface ' + 
+                                    'reconstruction from pressure and K_rms following Martins ' +
+                                    'et al. (2021) with hydrostatic tail treatment, and the ' + 
                                     'horizontal velocities are despiked E&N velocities ' +
                                     'from the range bin specified by the variable ' +
                                     'vel_binh.')
@@ -1883,6 +1930,28 @@ if __name__ == '__main__':
                         dss_daily = adcp.wavespec(dsd, seglen=1200, z='z_hyd')
                         # Save spectra to netCDF
                         adcp.save_spec_nc(dss_daily, fn=fn_spec_zh, z_var='z_hyd')
+                    
+                    # Also estimate 20-min. wave spectra from K_rms linear pressure reconstruction
+                    # w/ hydrostatic tail
+                    fn_spec_etalkh = os.path.join(specdir, 
+                                            'Asilomar_SSA_L2_Sig_Spec_ETAlkrmsh_{}_{}.nc'.format(
+                                                 adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etalkh):
+                        print('Estimating daily spectra from eta_lin_krms_h ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_lin_krms_h')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etalkh, z_var='eta_lin_krms_h')
+
+                    # Also estimate 20-min. wave spectra from K_rms nonlinear pressure reconstruction
+                    # w/ hydrostatic tail
+                    fn_spec_etanlh = os.path.join(specdir, 
+                                            'Asilomar_SSA_L2_Sig_Spec_ETAnlkrmsh_{}_{}.nc'.format(
+                                                 adcp.mid, date0_str))
+                    if not os.path.isfile(fn_spec_etanlh):
+                        print('Estimating daily spectra from eta_nl_krms_h ...')
+                        dss_daily = adcp.wavespec(dsd, seglen=1200, z='eta_nl_krms_h')
+                        # Save spectra to netCDF
+                        adcp.save_spec_nc(dss_daily, fn=fn_spec_etanlh, z_var='eta_nl_krms_h')
 
                     # Make new empty list and append the following day
                     dsv_daily = []
