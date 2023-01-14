@@ -19,6 +19,7 @@ from PyPDF2 import PdfFileMerger, PdfFileReader
 from roxsi_pyfuns import wave_spectra as rpws
 from roxsi_pyfuns import adcp_funs as rpaf
 from roxsi_pyfuns import zero_crossings as rpzc
+from roxsi_pyfuns import transfer_functions as rptf
 from roxsi_pyfuns import plotting as rppl
 
 # Input arguments
@@ -39,12 +40,12 @@ def parse_args(**kwargs):
     parser.add_argument("-d0", 
             help=('Analysis period start date in format "yyyymmdd".'),
             type=str,
-            default='20220713',
+            default='20220705',
             )
     parser.add_argument("-d1", 
             help=('Analysis period end date in format "yyyymmdd".'),
             type=str,
-            default='20220720',
+            default='20220714',
             )
     parser.add_argument("-t0", 
             help=('Analysis period start time in format "HHMMSS".'),
@@ -66,9 +67,8 @@ args = parse_args(args=sys.argv[1:])
 data_root = os.path.join(args.dr, 'Level1')
 
 # Sig100 serial number to visualize
-ser = 103094
-veldir = os.path.join(data_root, '{}'.format(ser)) # Velocity netcdf directory
-specdir = os.path.join(data_root, '{}'.format(ser), 'Spectra') # Spectra netcdf directory
+veldir = os.path.join(data_root, '{}'.format(args.ser)) # Velocity netcdf directory
+specdir = os.path.join(data_root, '{}'.format(args.ser), 'Spectra') # Spectra netcdf directory
 
 # Output dirs
 spec_outdir = os.path.join(specdir, 'img')
@@ -130,6 +130,40 @@ for date in tqdm(date_range, desc='Date: '):
     for si, (t0s, t1s) in enumerate(zip(time_range[:-1], time_range[1:])):
         # Take 20-min slice from dataset
         seg = ds.sel(time=slice(t0s, t1s)).copy() # Segment slice
+        # Test directional wave spectrum function
+        z = seg.ASTd_eta.values
+        u = seg.vE.isel(range=2).values
+        v = seg.vN.isel(range=2).values
+        spec = rpws.spec_uvz(z, u=u, v=v, fs=4)
+        dm = {'a1':spec.a1.values, 'a2':spec.a2.values, 'b1':spec.b1.values,
+              'b2':spec.b2.values, 'E':spec.Ezz.values}
+        # Save to .mat
+        # from scipy.io import savemat
+        # savemat('dir_moments.mat', dm)
+        # Plot the kx-ky and the directional spectra of 1st record
+        fig = plt.figure(figsize=(6,6))
+        ax1 = plt.subplot(111, projection='polar')
+        # cs1 = spec.Efth.sel(freq=slice(0.01, 0.5)).plot.contourf(ax=ax1)
+        import matplotlib.colors as colors
+        cs1 = ax1.contourf(np.deg2rad(spec.Efth.direction.values),
+                           spec.Efth.sel(freq=slice(0.01, 0.5)).freq.values,
+                           spec.Efth.sel(freq=slice(0.01, 0.5)).values,
+                           norm=colors.LogNorm(),
+                          )
+        ax1.set_theta_zero_location("N")
+        ax1.set_theta_direction(-1)
+        r = 5
+        x = 0.2
+        y = spec.mdir.item()
+        ax1.arrow(spec.mdir.item()/180.*np.pi, 0.3, 0.0, 0.02, width = 0.0015,
+                  color='r', head_width=0.07)
+        plt.colorbar(cs1, ax=ax1)
+        plt.tight_layout()
+        plt.show()
+        plt.close()
+
+        raise ValueError
+
         
         # ********************************************************************
         # Get zero-crossing wave and crest heights from different surface
@@ -139,17 +173,21 @@ for date in tqdm(date_range, desc='Date: '):
         zc, Hw, Hc, Ht = rpzc.get_waveheights(seg.eta_hyd.values)
         Hws['hyd'].extend(Hw)
         Hcs['hyd'].extend(Hc)
+        # eta-lin wave/crest heights
         _, Hw, Hc, Ht = rpzc.get_waveheights(seg.eta_lin.values, zero_crossings=zc)
         Hws['lin'].extend(Hw)
         Hcs['lin'].extend(Hc)
+        # eta-lin-krms wave/crest heights
         _, Hw, Hc, Ht = rpzc.get_waveheights(seg.eta_lin_krms.values, 
                                              zero_crossings=zc)
         Hws['linkrms'].extend(Hw)
         Hcs['linkrms'].extend(Hc)
+        # eta-nl-krms wave/crest heights
         _, Hw, Hc, Ht = rpzc.get_waveheights(seg.eta_nl_krms.values, 
                                              zero_crossings=zc)
         Hws['nlkrms'].extend(Hw)
         Hcs['nlkrms'].extend(Hc)
+        # AST wave/crest heights
         _, Hw, Hc, Ht = rpzc.get_waveheights(seg.ASTd_eta.values, zero_crossings=zc)
         Hws['ast'].extend(Hw)
         Hcs['ast'].extend(Hc)
@@ -162,6 +200,9 @@ for date in tqdm(date_range, desc='Date: '):
         # ********************************************************************
         # Get first range bin below contamination region below sea surface
         ast = seg.ASTd.copy() # AST signal (despiked)
+        if np.all(np.isnan(ast.values)):
+            # All NaN AST signal -> use z_lin instead
+            ast = seg.z_lin.copy()
         zic = rpaf.contamination_range(ast.min().item(), binsz=0.5, beam_angle=25)
         # Highest range bin is zic m below AST minimum
         z_opt = ast.min().item() - seg.sel(range=zic, method='bfill').range.item()
@@ -180,9 +221,16 @@ for date in tqdm(date_range, desc='Date: '):
                 u = seg.vE.isel(range=bi).values # East vel.
                 v = seg.vN.isel(range=bi).values # North vel.
                 z = seg.ASTd_eta.values
+                if np.all(np.isnan(z)):
+                    # All NaN AST signal -> use eta_lin instead
+                    z = seg.eta_lin.values
                 dss = rpws.spec_uvz(z=z, u=u, v=v, fs=4)
                 # Plot wave spectrum vs horizontal velocity spectra
-                Euv = (dss.Euu + dss.Evv) / ((2*np.pi * dss.freq.values)**2)
+                d = seg.z_lin.mean().item() # Water depth
+                omega = 2*np.pi * dss.freq.values # Radian frequencies
+                k = rptf.waveno_full(omega, d=d) # Wavenumbers
+                depth_corr = (np.cosh(k*d) / np.sinh(k*d)) # Hyperbolic term
+                Euv = (dss.Euu + dss.Evv) / (omega**2 * depth_corr**2)
                 Euv.plot(ax=ax, label='Euv bin={}'.format(bi))
             # Finally, plot surface elevation variance spectrum on top
             dss.Ezz.plot(ax=ax, color='k', label='E_AST')
@@ -226,8 +274,10 @@ for date in tqdm(date_range, desc='Date: '):
             for ki, key in enumerate(eta_keys):
                 specd[key].Ezz.sel(time=tseg).plot(ax=ax, label=key, color=cs[ki])
                 # Compute spectral moments and save to dicts
-                S = specd[key].Ezz.sel(time=tseg, freq=slice(fmin, fmax)).values
-                F = specd[key].sel(freq=slice(fmin, fmax)).freq.values
+                # S = specd[key].Ezz.sel(time=tseg, freq=slice(fmin, fmax)).values
+                # F = specd[key].sel(freq=slice(fmin, fmax)).freq.values
+                S = specd[key].Ezz.sel(time=tseg).values
+                F = specd[key].freq.values
                 m0 = rpws.spec_moment(S=S, F=F, order=0)
                 m1 = rpws.spec_moment(S=S, F=F, order=1)
                 m2 = rpws.spec_moment(S=S, F=F, order=2)
@@ -254,8 +304,10 @@ for date in tqdm(date_range, desc='Date: '):
         else:
             for ki, key in enumerate(eta_keys):
                 # Only compute spectral moments and save to dicts, don't plot
-                S = specd[key].Ezz.sel(time=tseg, freq=slice(fmin, fmax)).values
-                F = specd[key].sel(freq=slice(fmin, fmax)).freq.values
+                # S = specd[key].Ezz.sel(time=tseg, freq=slice(fmin, fmax)).values
+                # F = specd[key].sel(freq=slice(fmin, fmax)).freq.values
+                S = specd[key].Ezz.sel(time=tseg).values
+                F = specd[key].freq.values
                 m0 = rpws.spec_moment(S=S, F=F, order=0)
                 m1 = rpws.spec_moment(S=S, F=F, order=1)
                 m2 = rpws.spec_moment(S=S, F=F, order=2)
@@ -301,13 +353,15 @@ for date in tqdm(date_range, desc='Date: '):
 
 print('Making plots ...')
 # Make scatter and QQ-plots of wave heights vs AST
-fn_qq_hw = os.path.join(img_outdir, 'qq_hw.pdf')
+fn_qq_hw = os.path.join(img_outdir, 'qq_hw_{}_{}.pdf'.format(args.d0, args.d1))
 if not os.path.isfile(fn_qq_hw):
     fig, axes = plt.subplots(figsize=(8,8), nrows=2, ncols=2)
     keys = ['hyd', 'lin', 'linkrms', 'nlkrms']
-    ylab = [r'$H_\mathrm{w}$ (hyd) [m]', r'$H_\mathrm{w}$ (lin) [m]', 
+    ylab = [r'$H_\mathrm{w}$ (hyd) [m]',
+            r'$H_\mathrm{w}$ (lin) [m]', 
             r'$H_\mathrm{w}$ (lin-$K_\mathrm{rms}$) [m]', 
-            r'$H_\mathrm{w}$ (nl-$K_\mathrm{rms}$) [m]']
+            r'$H_\mathrm{w}$ (nl-$K_\mathrm{rms}$) [m]',
+           ]
     x = np.array(Hws['ast']) # AST wave heights (always on x axis)
     for i,k in enumerate(keys):
         ax = axes.flatten()[i]
@@ -340,13 +394,15 @@ if not os.path.isfile(fn_qq_hw):
     plt.close()
 
 # Make scatter and QQ-plots of crest heights vs AST
-fn_qq_hc = os.path.join(img_outdir, 'qq_hc.pdf')
+fn_qq_hc = os.path.join(img_outdir, 'qq_hc_{}_{}.pdf'.format(args.d0, args.d1))
 if not os.path.isfile(fn_qq_hc):
     fig, axes = plt.subplots(figsize=(8,8), nrows=2, ncols=2)
     keys = ['hyd', 'lin', 'linkrms', 'nlkrms']
-    ylab = [r'$H_\mathrm{c}$ (hyd) [m]', r'$H_\mathrm{c}$ (lin) [m]', 
+    ylab = [r'$H_\mathrm{c}$ (hyd) [m]',
+            r'$H_\mathrm{c}$ (lin) [m]', 
             r'$H_\mathrm{c}$ (lin-$K_\mathrm{rms}$) [m]', 
-            r'$H_\mathrm{c}$ (nl-$K_\mathrm{rms}$) [m]']
+            r'$H_\mathrm{c}$ (nl-$K_\mathrm{rms}$) [m]',
+           ]
     x = np.array(Hcs['ast']) # AST wave heights (always on x axis)
     for i,k in enumerate(keys):
         ax = axes.flatten()[i]
@@ -422,15 +478,42 @@ if not os.path.isfile(fn_bad_ast):
     plt.savefig(fn_bad_ast, bbox_inches='tight', dpi=300)
     plt.close()
 
+# Plot example time series with all reconstructions
+t0 = pd.Timestamp('2022-07-06T20:28:00')
+t1 = pd.Timestamp('2022-07-06T20:28:30')
+# Read correct dataset
+datestr = '20220706'
+fn_ex = os.path.join(img_outdir, 'etas_example_{}.pdf'.format(datestr))
+if not os.path.isfile(fn_ex):
+    fnex = [f for f in fns_v if datestr in f]
+    ds = xr.decode_cf(xr.open_dataset(fnex[0], decode_coords='all'))
+    fig, ax = plt.subplots(figsize=(7,3),)
+    ds.eta_hyd.sel(time=slice(t0, t1)).plot(ax=ax, 
+        label=r'$\eta_\mathrm{hyd}$')
+    ds.eta_lin.sel(time=slice(t0, t1)).plot(ax=ax, 
+        label=r'$\eta_\mathrm{lin}$')
+    ds.eta_lin_krms.sel(time=slice(t0, t1)).plot(ax=ax, 
+        label=r'$\eta_\mathrm{lin}$ ($K_\mathrm{rms}$)')
+    ds.eta_nl_krms.sel(time=slice(t0, t1)).plot(ax=ax, 
+        label=r'$\eta_\mathrm{nl}$ ($K_\mathrm{rms}$)')
+    ds.ASTd_eta.sel(time=slice(t0, t1)).plot(ax=ax, label=r'$\eta_\mathrm{AST}$',
+                    color='k')
+    ax.set_ylabel(r'$\eta$ [m]')
+    ax.set_xlabel(None)
+    ax.set_title(t0.date())
+    ax.legend(ncols=2, fontsize=8)
+    plt.tight_layout()
+    plt.savefig(fn_ex, bbox_inches='tight', dpi=300)
+    plt.close()
+
 # Make scatter plots of spectral moments from AST vs surface reconstructions
 md = {'m0d':m0d, 'm1d':m1d, 'm2d':m2d, 'm3d':m3d, 'm4d':m4d, }
 for mom in range(5):
-    fn_mom = os.path.join(img_outdir, 'm{}_comp.pdf'.format(mom))
+    fn_mom = os.path.join(img_outdir, 'm{}_comp_{}_{}.pdf'.format(mom, args.d0, args.d1))
     if not os.path.isfile(fn_mom):
         fig, axes = plt.subplots(figsize=(4,12), sharex=True, sharey=True, nrows=4)
         alpha = 0.8
-        ylab = [r'(hyd)', r'(lin)', r'(lin-$K_\mathrm{rms}$)', 
-                r'(nl-$K_\mathrm{rms}$)']
+        ylab = [r'(hyd)', r'(lin)', r'(lin-$K_\mathrm{rms}$)', r'(nl-$K_\mathrm{rms}$)',]
         ress = [] # List to store lin. reg. results for later plotting
         rmses = [] # List to store RMSE values for later plotting
         xymins = [] # List to store min. xy limits
