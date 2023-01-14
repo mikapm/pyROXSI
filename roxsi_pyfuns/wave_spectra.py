@@ -6,6 +6,7 @@ import numpy as np
 import xarray as xr
 from scipy.signal import detrend, windows
 from roxsi_pyfuns import transfer_functions as rptf
+from roxsi_pyfuns import coordinate_transforms as rpct
 
 def spec_moment(S, F, order):
     """
@@ -111,9 +112,9 @@ def spec_bandwidth(S, F, method='longuet'):
     return nu
 
 
-def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
-        fmin=0.001, fmax=None, hpfilt=False, return_freq=True, 
-        fillvalue=None, timestamp=None):
+def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
+             fmin=0.001, fmax=None, hpfilt=False, return_freq=True, 
+             fillvalue=None, timestamp=None):
     """
     Returns wave spectrum from time series of sea
     surface elevation/heave displacements z and (optional) 
@@ -131,6 +132,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         v - ndarray; (optional) 1D north displacements [m/s]
         wsec - window length in seconds
         fs - sampling frequency in Hz
+        dth - directional resolution in degrees
         fmerge - int; freq bands to merge, must be odd
         fmin - scalar; minimum frequency for calculating bulk params
         fmax - scalar; maximum frequency for calculating bulk params
@@ -198,12 +200,15 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         print('Input data not long enough or fs too low.')
         return np.zeros(n_freqs)
     # Define dictionary to store U,V,Z fft windows, if applicable
-    if ndim > 1:
+    if ndim == 3:
         order = ['z', 'u', 'v'] # Order of components
+        direction = rpct.dirs_nautical(dtheta=dth)
+        n_dirs = len(direction)
         # Output ds spectral variables
         data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
                    'Euu': (['freq'], np.zeros(n_freqs)),
                    'Evv': (['freq'], np.zeros(n_freqs)),
+                   'Efth': (['freq', 'direction'], np.zeros((n_freqs, n_dirs))),
                   }
     else:
         order = ['z']
@@ -214,17 +219,29 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     if timestamp is not None:
         time = [timestamp] # time coordinate
         # Initialize output dataset
-        ds = xr.Dataset(data_vars=data_vars, 
-                        coords={'freq': (['freq'], f),
-                                'time': (['time'], time)},
-                       )
+        if ndim == 3:
+            ds = xr.Dataset(data_vars=data_vars, 
+                            coords={'freq': (['freq'], f),
+                                    'direction': (['direction'], np.sort(direction)),
+                                    'time': (['time'], time)},
+                           )
+        else:
+            ds = xr.Dataset(data_vars=data_vars, 
+                            coords={'freq': (['freq'], f),
+                                    'time': (['time'], time)},
+                            )
     else:
         time = [] # No time coord.
         # Initialize output dataset
-        ds = xr.Dataset(data_vars=data_vars, 
-                        coords={'freq': (['freq'], f),},
-                       )
-
+        if ndim == 3:
+            ds = xr.Dataset(data_vars=data_vars, 
+                            coords={'freq': (['freq'], f),
+                                    'direction': (['direction'], np.sort(direction))},
+                            )
+        else:
+            ds = xr.Dataset(data_vars=data_vars, 
+                            coords={'freq': (['freq'], f),},
+                            )
 
     # Loop over u, v and z and split into windows
     for i, key in zip(range(int(ndim)), order):
@@ -344,10 +361,10 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         # Take reciprocals such that wave direction is FROM, not TOWARDS
         dirs[westdirs] -= 180 
         dirs[eastdirs] += 180 
-        ds['dirs'] = (['freq'], dirs)
-        # Directional spread
+        ds['dirs_freq'] = (['freq'], dirs)
+        # Directional spread (function of frequency)
         spread = 180 / 3.14 * spread1
-        ds['dspr'] = (['freq'], spread)
+        ds['dspr_freq'] = (['freq'], spread)
         # Dominant direction
         Dp = dirs[fpind] # Dominant (peak) direction, use peak f
         # Screen for bad direction estimate,     
@@ -360,6 +377,18 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
         else:
             # Peak freq. too low or too high
             Dp = np.nan
+
+        # Estimate directional spectrum with Maximum Entropy Method of
+        # Lygre and Krogstad (1986)
+        ds_efth = MEM_directionalestimator(E=ds.Ezz.values, F=f, a1=a1, a2=a2, b1=b1, 
+            b2=b2, dtheta=dth, fmin=fmin, fmax=fmax, convert=True)
+        # Save to output ds
+        ds['Efth'].values = ds_efth.Efth.values
+        # Sort directions of Efth
+        ds = ds.sortby('direction')
+        # Save directional spread and mean direction
+        ds['dspr'] = ([], ds_efth.dspr.item())
+        ds['mdir'] = ([], ds_efth.mdir.item())
 
     # If not specified, use Nyquist frequency as max. frequency
     if fmax is None:
@@ -431,26 +460,174 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, fmerge=3,
     return ds
 
 
-def mspr(spec_xr):
+def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=True, 
+                             dtheta=2, fmin=None, fmax=None):
+    """
+    function [NS,NE] = MEM_calc(a1,a2,b1,b2,en,convert)
+    
+    This function calculates the Maximum Entropy Method estimate of
+    the Directional Distribution of a wave field.
+    
+    NOTE: The normalized directional distribution array (NS) and the Energy
+    array (NE) have been converted to a geographic coordinate frame in which
+    direction is direction from.
+    
+     Version: 1.1 - 5/2003,      Paul Jessen, NPS
+     *** altered, 2/2005 ****    Jim Thomson, WHOI
+     Python version, 1/2023      Mika Malila, UNC
+    
+     First Version: 1.0 - 8/00
+    
+     Latest Version: 1.1- 5/2003
+    
+     Written by: Paul F. Jessen
+                 Department of Oceanography
+                 Naval Postgraduate School
+                 Monterey, CA
+    
+    DESCRIPTION:
+    Function calculates directional distribution of a wave field using the 
+    Maximum Entropy Method of Lygre & Krogstad (JPO V16 1986). User passes the
+    directional moments (a1,b1,a2,b2) and energy density (en) to the function.
+    The directional moments are expected to be in a right hand coordinate 
+    system (i.e. north, west) with direction being the direction towards.
+    The returned energy and directional distributions have been converted to
+    nautical convention with direction being the direction from.
+    
+    Parameters:
+        E - np.array; Wave frequency spectrum
+        F - np.array; Frequency array
+        a1 - np.array; First directional Fourier moment (function of frequency)
+        b1 - np.array; Second directional Fourier moment (function of frequency)
+        a2 - np.array; Third directional Fourier moment (function of frequency)
+        b2 - np.array; Fourth directional Fourier moment (function of frequency)
+        convert - bool; If True, convert directions to geographical coordinates
+        dtheta - scalar; directional resolution (degrees)
+        fmin - scalar; Min. frequency for directional spread calculation
+        fmax - scalar; Max. frequency for directional spread calculation
+    
+    Returns:
+        ds - xr.Dataset with directional spectrum
+    """
+    
+    # Calculate directional energy spectrum based on Maximum Entropy Method (MEM)
+    # of Lygre & Krogstad, JPO V16 1986.
+
+    # Switch to Krogstad notation
+    d1 = a1.copy()
+    d2 = b1.copy()
+    d3 = a2.copy()
+    d4 = b2.copy()
+    en = E.copy()
+    freq = F.copy()
+    c1 = d1 + d2 * 1j
+    c2 = d3 + d4 * 1j
+    p1 = (c1 - c2 * np.conj(c1)) / (1 - np.abs(c1)**2)
+    p2 = c2 - c1 * p1
+    x1 = 1 - p1 * np.conj(c1) - p2 * np.conj(c2)
+    
+    # Define directional domain, this is still in Datawell convention
+    direc = np.arange(0, 359.9, dtheta)
+    ndir = len(direc)
+    nfreq = len(en)
+    # get distribution with "dtheta" degree resolution (still in right hand system)
+    dr = np.pi / 180
+    tot = 0
+    # Initialise directional distribution D
+    D = np.zeros((nfreq, ndir)).astype(complex)
+    for n in range(ndir):
+        alpha = direc[n] * dr
+        e1 = np.cos(alpha) - np.sin(alpha) * 1j
+        e2 = np.cos(2 * alpha) - np.sin(2 * alpha) * 1j
+        y1 = np.abs(1 - p1 * e1 - p2 * e2)**2
+        # S(:, n) is the directional distribution across all frequencies (:)
+        # and directions (n).
+        D[:, n] = x1 / y1
+    D = np.real(D)
+
+    # Normalize each frequency band by the total across all directions
+    # so that the integral of D(theta:f) is 1. Dn is the normalized directional
+    # distribution
+    Dn = np.zeros_like(D)
+    tot = np.sum(D,1) * dtheta
+    for ii in range(nfreq):
+        Dn[ii, :] = D[ii, :] / tot[ii]
+
+    # Calculate energy density by multiplying the energies at each frequency
+    # by the normalized directional distribution at that frequency
+    E = np.zeros_like(Dn)
+    for ii in range(nfreq):
+        E[ii, :] = Dn[ii, :] * en[ii]
+
+    if convert:
+        # Convert to a geographic coordinate frame
+        ndirec = np.abs(direc - 360)
+        # Convert from direction towards to direction from
+        ndirec += 180
+        ia = np.where(ndirec >= 360)[0]
+        ndirec[ia] -= 360
+
+        # the Energy and distribution (s) arrays now don't go from 0-360.
+        # They now go from 180-5 and then from 360-185. Create new Energy and
+        # distribution matrices that go from 0-360.
+        NE = np.zeros_like(E)
+        ND = np.zeros_like(Dn)
+        for ii in range(ndir):
+            ia = np.where(ndirec==direc[ii])[0]
+            if len(ia) > 0:
+                NE[:, ii] = E[:, ia.item()]
+                ND[:, ii] = Dn[:, ia.item()]
+    else:
+        NE = E.copy()
+        ND = Dn.copy()
+
+    # Convert directions to nautical convention (compass dir FROM)
+    theta = rpct.dirs_nautical(dtheta=dtheta)  
+
+    # Sort spectrum according to new directions
+    dsort = np.argsort(theta)
+    NE = NE[:, dsort]
+    theta = np.sort(theta)
+
+    # Save output to xr.Dataset
+    data_vars={'Efth': (['freq', 'direction'], NE),}
+    ds = xr.Dataset(data_vars=data_vars, 
+                    coords={'freq': (['freq'], freq),
+                            'direction': (['direction'], theta)},
+                   )
+    # Compute mean direction and directional spread and save to dataset
+    _, mdir, dspr = mspr(ds, key='Efth', fmin=fmin, fmax=fmax)
+    ds['mdir'] = ([], mdir)
+    ds['dspr'] = ([], dspr)
+
+    return ds
+
+
+def mspr(spec_xr, key='Efth', norm=False, fmin=None, fmax=None):
     """
     Mean directional spread following Kuik (1988), coded by Jan Victor Björkqvist
+
+    Use norm=True with model data (eg WW3) (?)
     """
-    freq = spec_xr.freq.values
     theta = np.deg2rad(spec_xr.direction.values)
-    dD = 360/len(theta)
-    # Normalizing here so that integration over direction becomes summing
-    efth = spec_xr*dD*np.pi/180
+    dD = 360 / len(theta)
+    if norm:
+        # Normalizing here so that integration over direction becomes summing
+        efth = spec_xr[key] * dD * np.pi/180
+    else:
+        efth = spec_xr[key]
     ef = efth.sum(dim='direction')  # Omnidirection spectra
-    eth = efth.integrate(dim='freq')  # Directional distribution
-    m0 = ef.integrate(dim='freq')
-    c1 = ((np.cos(theta)*efth).sum(dim='direction'))  # Function of frequency
-    s1 = ((np.sin(theta)*efth).sum(dim='direction'))
-    a1m = c1.integrate(dim='freq')/m0  # Mean parameters
-    b1m = s1.integrate(dim='freq')/m0
-    thetam = np.arctan2(b1m,a1m)
+    eth = efth.integrate(coord='freq')  # Directional distribution
+    m0 = ef.sel(freq=slice(fmin, fmax)).integrate(coord='freq').item()
+    # Function of frequency:
+    c1 = ((np.cos(theta) * efth).sel(freq=slice(fmin, fmax)).sum(dim='direction'))  
+    s1 = ((np.sin(theta) * efth).sel(freq=slice(fmin, fmax)).sum(dim='direction'))
+    a1m = c1.integrate(coord='freq').values / m0  # Mean parameters
+    b1m = s1.integrate(coord='freq').values / m0
+    thetam = np.arctan2(b1m, a1m)
     m1 = np.sqrt(b1m**2 + a1m**2)
-    sprm = np.sqrt(2-2*(m1)).values*180/np.pi
-    dirm = np.mod(thetam.values*180/np.pi, 360)
+    sprm = (np.sqrt(2 - 2*(m1)) * 180/np.pi).item()
+    dirm = (np.mod(thetam * 180/np.pi, 360)).item()
     spec = ef.values
     return spec, dirm, sprm 
 
