@@ -132,8 +132,8 @@ for date in tqdm(date_range, desc='Date: '):
         seg = ds.sel(time=slice(t0s, t1s)).copy() # Segment slice
         # Test directional wave spectrum function
         z = seg.ASTd_eta.values
-        u = seg.vE.isel(range=2).values
-        v = seg.vN.isel(range=2).values
+        u = seg.vEhpr.isel(range=4).values
+        v = seg.vNhpr.isel(range=4).values
         spec = rpws.spec_uvz(z, u=u, v=v, fs=4)
         dm = {'a1':spec.a1.values, 'a2':spec.a2.values, 'b1':spec.b1.values,
               'b2':spec.b2.values, 'E':spec.Ezz.values}
@@ -141,28 +141,28 @@ for date in tqdm(date_range, desc='Date: '):
         # from scipy.io import savemat
         # savemat('dir_moments.mat', dm)
         # Plot the kx-ky and the directional spectra of 1st record
-        fig = plt.figure(figsize=(6,6))
-        ax1 = plt.subplot(111, projection='polar')
-        # cs1 = spec.Efth.sel(freq=slice(0.01, 0.5)).plot.contourf(ax=ax1)
-        import matplotlib.colors as colors
-        cs1 = ax1.contourf(np.deg2rad(spec.Efth.direction.values),
-                           spec.Efth.sel(freq=slice(0.01, 0.5)).freq.values,
-                           spec.Efth.sel(freq=slice(0.01, 0.5)).values,
-                           norm=colors.LogNorm(),
-                          )
-        ax1.set_theta_zero_location("N")
-        ax1.set_theta_direction(-1)
-        r = 5
-        x = 0.2
-        y = spec.mdir.item()
-        ax1.arrow(spec.mdir.item()/180.*np.pi, 0.3, 0.0, 0.02, width = 0.0015,
-                  color='r', head_width=0.07)
-        plt.colorbar(cs1, ax=ax1)
-        plt.tight_layout()
-        plt.show()
-        plt.close()
+#         fig = plt.figure(figsize=(6,6))
+#         ax1 = plt.subplot(111, projection='polar')
+#         # cs1 = spec.Efth.sel(freq=slice(0.01, 0.5)).plot.contourf(ax=ax1)
+#         import matplotlib.colors as colors
+#         cs1 = ax1.contourf(np.deg2rad(spec.Efth.direction.values),
+#                            spec.Efth.sel(freq=slice(0.01, 0.5)).freq.values,
+#                            spec.Efth.sel(freq=slice(0.01, 0.5)).values,
+#                            norm=colors.LogNorm(),
+#                           )
+#         ax1.set_theta_zero_location("N")
+#         ax1.set_theta_direction(-1)
+#         r = 5
+#         x = 0.2
+#         y = spec.mdir.item()
+#         ax1.arrow(spec.mdir.item()/180.*np.pi, 0.3, 0.0, 0.02, width = 0.0015,
+#                   color='r', head_width=0.07)
+#         plt.colorbar(cs1, ax=ax1)
+#         plt.tight_layout()
+#         plt.show()
+#         plt.close()
 
-        raise ValueError
+        # raise ValueError
 
         
         # ********************************************************************
