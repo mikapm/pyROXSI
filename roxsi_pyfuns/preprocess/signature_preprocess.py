@@ -247,6 +247,41 @@ class ADCP():
         return zic
 
 
+    def echo2ds(self, echo, etime, newtime=None, t0=None, t1=None):
+        """
+        # Create xr.DataArray from echogram data.
+
+        Parameters:
+            echo - np.array; array of echogram returns (ntimes, nbins)
+            etime - time array of echogram timestamps
+            newtime - if not None, new timestamps to interpolate echogram
+                    data into.
+            t0 - pd.Timestamp - start time of output da. If None, returns
+                                data from the start of the array
+            t1 - pd.Timestamp - end time of output da. If None, returns
+                                data from the start of the array
+
+        Returns:
+            dae - xr.DataArray with echogram data from inputs
+        """
+        # Convert input to DataArray 
+        nbins = echo.shape[1] # Number of vertical bins
+        dz = 0.005 # Bin interval in meters
+        z = self.zp + np.arange(1, nbins+1) * dz # Depth bins
+        da = xr.DataArray(echo,
+                          coords=[etime, z],
+                          dims=['time', 'z'],
+                         )
+        # Crop to requested length
+        da = da.sel(time=slice(t0, t1))
+        # Interpolate to new time array if requested
+        if newtime is not None:
+            da = da.interp(time=newtime, method='cubic',
+                           kwargs={"fill_value": "extrapolate"}
+                          )
+        return da
+
+
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
                      despike_vel=False, despike_ast=True, only_hpr=False,
                      fmin=0.05, fmax=0.33,
@@ -487,19 +522,21 @@ class ADCP():
                     t1ss = seg.index[-1]
                     print('Despike AST seg: {} - {}'.format(t0ss, t1ss))
                     # Despike segment using GP method
-                    seg_d, mask_d = self.despike_GP(seg, 
-                                                    print_kernel=False,
-                                                   )
-                    # Save despiked segment to correct indices in df_ast
-                    df_ast['des'].loc[t0ss:t1ss] = seg_d
-                    if t0ss >= self.t0:
-                        # Save eta of despiked segment to correct indices in df_ast
-                        if not np.sum(np.isnan(seg_d)):
-                            df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg_d)
-                        else:
-                            df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg)
-                        # Save eta of despiked segment to correct indices in df_ast
-                        df_ast['raw_eta'].loc[t0ss:t1ss] = detrend(seg)
+                    if len(seg) > 5*60/self.dt:
+                        # Require at least 5 min data segment
+                        seg_d, mask_d = self.despike_GP(seg, 
+                                                        print_kernel=False,
+                                                        )
+                        # Save despiked segment to correct indices in df_ast
+                        df_ast['des'].loc[t0ss:t1ss] = seg_d
+                        if t0ss >= self.t0:
+                            # Save eta of despiked segment to correct indices in df_ast
+                            if not np.sum(np.isnan(seg_d)):
+                                df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg_d)
+                            else:
+                                df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg)
+                            # Save eta of despiked segment to correct indices in df_ast
+                            df_ast['raw_eta'].loc[t0ss:t1ss] = detrend(seg)
                 # Save dataframe to csv
                 df_ast.to_csv(fn_ast_desp)
 
@@ -590,11 +627,11 @@ class ADCP():
         # Note order and sign of beams!!!
         if despike_vel:
             beam_arr_d = np.array([-dsb.vb1d, -dsb.vb3d, -dsb.vb4d, -dsb.vb2d, -dsb.vb5d])
-            enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading, 
-                                    pitch=pitch, roll=roll)
+            enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading+self.magdec, 
+                                      pitch=pitch, roll=roll)
         else:
             beam_arr_d = np.array([-dsb.vb1, -dsb.vb3, -dsb.vb4, -dsb.vb2, -dsb.vb5])
-            enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading, 
+            enu_vel_d = rpct.beam2enu(beam_arr_d, heading=heading+self.magdec, 
                                       pitch=pitch, roll=roll)
         # Also read pressure and reconstruct linear sea-surface elevation
         pres = mat['Data']['Burst_Pressure'].item().squeeze()
@@ -1051,7 +1088,7 @@ class ADCP():
         return df_out
 
         
-    def wavespec(self, ds, u='vE', v='vN', z='ASTd', seglen=1200, 
+    def wavespec(self, ds, u='vEhpr', v='vNhpr', z='ASTd', seglen=1200, 
                  fmin=0.05, fmax=0.33):
         """
         Estimate wave spectra from ADCP data in the input dataset ds.
@@ -1096,6 +1133,9 @@ class ADCP():
             zic = self.contamination_range(ha=seg.min())
             # Take ASTd segment and use that for z_opt
             seg_ast = ds['ASTd'].sel(time=slice(t0ss, t1ss))
+            if np.all(np.isnan(seg_ast)):
+                # AST signal all NaN -> use z_lin instead
+                seg_ast = ds['z_lin'].sel(time=slice(t0ss, t1ss))
             # Get optimal velocity range bin number following Lentz et al. (2021)
             # Use 'bfill' to be conservative (round up)
             z_opt = seg_ast.min() - ds_seg.sel(range=zic,
@@ -1136,7 +1176,7 @@ class ADCP():
             # Add range value to output dataset
             dss['vel_binh'] = (['time'], np.atleast_1d(range_val))
             # Add mean water depth value to output dataset
-            seg_d = ds_seg.ASTd.values # Depth of segment from ASTd
+            seg_d = ds_seg.z_lin.values # Depth of segment from z_lin
             dss['water_depth'] = (['time'], np.atleast_1d(np.mean(seg_d)))
             # Append to list
             dss_list.append(dss)
@@ -1237,10 +1277,10 @@ class ADCP():
             ds.vB5d.attrs['units'] = 'm/s'
         # ENU velocities from Nortek
         ds.vE.attrs['standard_name'] = 'eastward_sea_water_velocity'
-        ds.vE.attrs['long_name'] = 'Eastward velocity from Nortek software'
+        ds.vE.attrs['long_name'] = 'Magnetic eastward velocity from Nortek software'
         ds.vE.attrs['units'] = 'm/s'
         ds.vN.attrs['standard_name'] = 'northward_sea_water_velocity'
-        ds.vN.attrs['long_name'] = 'Northward velocity from Nortek software'
+        ds.vN.attrs['long_name'] = 'Magnetic northward velocity from Nortek software'
         ds.vN.attrs['units'] = 'm/s'
         ds.vU1.attrs['standard_name'] = 'upward_sea_water_velocity'
         ds.vU1.attrs['long_name'] = 'Vertical velocity 1 from Nortek software'
@@ -1250,10 +1290,10 @@ class ADCP():
         ds.vU2.attrs['units'] = 'm/s'
         # ENU velocities calculated from heading, pitch & roll
         ds.vEhpr.attrs['standard_name'] = 'eastward_sea_water_velocity'
-        ds.vEhpr.attrs['long_name'] = 'Eastward velocity calculated from heading, pitch and roll'
+        ds.vEhpr.attrs['long_name'] = 'Geographic eastward velocity calculated from heading, pitch and roll'
         ds.vEhpr.attrs['units'] = 'm/s'
         ds.vNhpr.attrs['standard_name'] = 'northward_sea_water_velocity'
-        ds.vNhpr.attrs['long_name'] = 'Northward velocity calculated from heading, pitch and roll'
+        ds.vNhpr.attrs['long_name'] = 'Geographic northward velocity calculated from heading, pitch and roll'
         ds.vNhpr.attrs['units'] = 'm/s'
         ds.vU1hpr.attrs['standard_name'] = 'upward_sea_water_velocity'
         ds.vU1hpr.attrs['long_name'] = 'Vertical velocity calculated from 4 beams using heading, pitch and roll'
@@ -1396,6 +1436,7 @@ class ADCP():
             ds = ds.assign_coords(lat=[lat])
         # Set variable attributes for output netcdf file
         ds.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
+        ds.Efth.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
         if z_var == 'ASTd':
             z_str = 'AST'
         elif z_var == 'z_hyd':
@@ -1412,7 +1453,10 @@ class ADCP():
             z_str = 'nonlinear pressure reconstruction using K_rms (hydrostatic tail)'
         ds.Ezz.attrs['long_name'] = 'scalar (frequency) wave variance density spectrum from {}'.format(
             z_str)
+        ds.Efth.attrs['long_name'] = 'directional wave variance density spectrum from {}'.format(
+            z_str)
         ds.Ezz.attrs['units'] = 'm^2/Hz'
+        ds.Efth.attrs['units'] = 'm^2/Hz/deg'
         ds.Evv.attrs['units'] = 'm^2/Hz'
         ds.Evv.attrs['standard_name'] = 'northward_sea_water_velocity_variance_spectral_density'
         ds.Evv.attrs['long_name'] = 'auto displacement spectrum from northward velocity component'
@@ -1420,26 +1464,35 @@ class ADCP():
         ds.Euu.attrs['standard_name'] = 'eastward_sea_water_velocity_variance_spectral_density'
         ds.Euu.attrs['long_name'] = 'auto displacement spectrum from eastward velocity component'
         ds.a1.attrs['units'] = 'dimensionless'
-        ds.a1.attrs['standard_name'] = 'a1_directional_fourier_component'
+        ds.a1.attrs['standard_name'] = 'a1_directional_fourier_moment'
         ds.a1.attrs['long_name'] = 'a1 following Kuik et al. (1988) and Herbers et al. (2012)'
         ds.a2.attrs['units'] = 'dimensionless'
-        ds.a2.attrs['standard_name'] = 'a2_directional_fourier_component'
+        ds.a2.attrs['standard_name'] = 'a2_directional_fourier_moment'
         ds.a2.attrs['long_name'] = 'a2 following Kuik et al. (1988) and Herbers et al. (2012)'
         ds.b1.attrs['units'] = 'dimensionless'
-        ds.b1.attrs['standard_name'] = 'b1_directional_fourier_component'
+        ds.b1.attrs['standard_name'] = 'b1_directional_fourier_moment'
         ds.b1.attrs['long_name'] = 'b1 following Kuik et al. (1988) and Herbers et al. (2012)'
         ds.b2.attrs['units'] = 'dimensionless'
-        ds.b2.attrs['standard_name'] = 'b2_directional_fourier_component'
+        ds.b2.attrs['standard_name'] = 'b2_directional_fourier_moment'
         ds.b2.attrs['long_name'] = 'b2 following Kuik et al. (1988) and Herbers et al. (2012)'
+        ds.dspr_freq.attrs['units'] = 'angular_degree'
+        ds.dspr_freq.attrs['standard_name'] = 'sea_surface_wind_wave_directional_spread'
+        ds.dspr_freq.attrs['long_name'] = 'directional spread as a function of frequency'
         ds.dspr.attrs['units'] = 'angular_degree'
         ds.dspr.attrs['standard_name'] = 'sea_surface_wind_wave_directional_spread'
-        ds.dspr.attrs['long_name'] = 'directional spread as a function of frequency'
-        ds.dirs.attrs['units'] = 'angular_degree'
-        ds.dirs.attrs['standard_name'] = 'sea_surface_wind_wave_direction'
-        ds.dirs.attrs['long_name'] = 'wave energy directional distribution'
+        ds.dspr.attrs['long_name'] = 'mean directional spread following Kuik et al. (1988)'
+        ds.mdir.attrs['units'] = 'angular_degree'
+        ds.mdir.attrs['standard_name'] = 'sea_surface_wind_wave_direction'
+        ds.mdir.attrs['long_name'] = 'mean wave direction following Kuik et al. (1988)'
+        ds.dirs_freq.attrs['units'] = 'angular_degree'
+        ds.dirs_freq.attrs['standard_name'] = 'sea_surface_wind_wave_direction'
+        ds.dirs_freq.attrs['long_name'] = 'wave energy directions per frequency'
         ds.freq.attrs['standard_name'] = 'sea_surface_wave_frequency'
         ds.freq.attrs['long_name'] = 'spectral frequencies in Hz'
         ds.freq.attrs['units'] = 'Hz'
+        ds.direction.attrs['standard_name'] = 'sea_surface_wave_direction'
+        ds.direction.attrs['long_name'] = 'directional distribution in degrees (dir. from, nautical convention)'
+        ds.direction.attrs['units'] = 'deg'
         ds.lat.attrs['standard_name'] = 'latitude'
         ds.lat.attrs['long_name'] = 'Approximate latitude of mooring'
         ds.lat.attrs['units'] = 'degrees_north'
@@ -1478,7 +1531,7 @@ class ADCP():
         ds.ph_uz.attrs['long_name'] = 'phase angle of horizontal velocity and surface elevation'
         ds.water_depth.attrs['units'] = 'm'
         ds.water_depth.attrs['standard_name'] = 'depth'
-        ds.water_depth.attrs['long_name'] = 'Mean water depth from AST'
+        ds.water_depth.attrs['long_name'] = 'Mean water depth from linear depth'
         ds.Hm0.attrs['units'] = 'm'
         ds.Hm0.attrs['standard_name'] = 'sea_surface_wave_significant_height'
         ds.Hm0.attrs['long_name'] = 'Hs estimate from 0th spectral moment'
