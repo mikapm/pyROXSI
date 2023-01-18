@@ -65,7 +65,7 @@ def rotate_xygrid(xspan, yspan, RotRad=0):
     return np.einsum('ji, mni -> jmn', RotMatrix, np.dstack([x, y]))
 
 
-def dirs_nautical(dtheta=2):
+def dirs_nautical(dtheta=2, recip=False):
     """
     Make directional array in Nautical convention (compass dir from).
     """
@@ -75,11 +75,12 @@ def dirs_nautical(dtheta=2):
     # Rotate, flip and sort
     theta += 90
     theta[theta < 0] += 360
-    westdirs = (theta > 180)
-    eastdirs = (theta < 180)
-    # Take reciprocals such wave direction is FROM, not TOWARDS
-    theta[westdirs] -= 180
-    theta[eastdirs] += 180
+    if recip:
+        westdirs = (theta > 180)
+        eastdirs = (theta < 180)
+        # Take reciprocals such that wave direction is FROM, not TOWARDS
+        theta[westdirs] -= 180
+        theta[eastdirs] += 180
 
     return theta
 
