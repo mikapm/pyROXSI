@@ -113,7 +113,7 @@ def spec_bandwidth(S, F, method='longuet'):
 
 
 def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
-             fmin=0.001, fmax=None, hpfilt=False, return_freq=True, 
+             fmin=0.001,fmax=None, depth=None, hpfilt=False,  
              fillvalue=None, timestamp=None):
     """
     Returns wave spectrum from time series of sea
@@ -136,6 +136,8 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         fmerge - int; freq bands to merge, must be odd
         fmin - scalar; minimum frequency for calculating bulk params
         fmax - scalar; maximum frequency for calculating bulk params
+        depth - scalar; mean water depth of segment. Required for computing
+                wave energy fluxes.
         hpfilt - bool; Set to True to high-pass filter data
         fillvalue - scalar; (optional) fill value for NaN elements
         timestamp - if not None, assigns a time coordinate using
@@ -361,10 +363,8 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # Take reciprocals such that wave direction is FROM, not TOWARDS
         dirs[westdirs] -= 180 
         dirs[eastdirs] += 180 
-        ds['dirs_freq'] = (['freq'], dirs)
         # Directional spread (function of frequency)
         spread = 180 / 3.14 * spread1
-        ds['dspr_freq'] = (['freq'], spread)
         # Dominant direction
         Dp = dirs[fpind] # Dominant (peak) direction, use peak f
         # Screen for bad direction estimate,     
@@ -380,15 +380,27 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
 
         # Estimate directional spectrum with Maximum Entropy Method of
         # Lygre and Krogstad (1986)
-        ds_efth = MEM_directionalestimator(E=ds.Ezz.values, F=f, a1=a1, a2=a2, b1=b1, 
-            b2=b2, dtheta=dth, fmin=fmin, fmax=fmax, convert=True)
+        ds_efth = MEM_directionalestimator(E=ds.Ezz.values, F=f, a1=a1, a2=a2, 
+            b1=b1, b2=b2, dtheta=dth, fmin=fmin, fmax=fmax, convert=False)
         # Save to output ds
         ds['Efth'].values = ds_efth.Efth.values
         # Sort directions of Efth
         ds = ds.sortby('direction')
-        # Save directional spread and mean direction
-        ds['dspr'] = ([], ds_efth.dspr.item())
-        ds['mdir'] = ([], ds_efth.mdir.item())
+
+        # Estimate energy flux (m^3 s^-1 Hz^-1 ) 
+        # Spectral estimator from T.H.C. Herbers, using LFDT group velocity 
+        # **OR** shallow water:
+        # robust to partial standing waves, but assumes shore normal propagation
+        if depth is not None:
+            k = rptf.waveno_full(omega=2*np.pi*f, d=depth) # linear wavenumbers 
+            Cg = 0.5 * (2*np.pi*f) * k * (1 + (2*k*depth) / np.sinh(2*k*depth))
+            g = 9.81 # gravity (m s^-2)
+            # Cg = np.sqrt(g * depth) # shallow water version, see Sheremet et al, 2002
+            # energy flux (by freq) in cartesian coordinates (assumes X propagation dominates... valid near beach)
+            Ein  = (1/4 * Cg * (np.abs(zz) + ((2*np.pi * f/(g*k))**2 ) * np.abs(uu) + 
+                    2 * (2*np.pi * f/(g*k)) * np.real(uz)))
+            Eout = (1/4 * Cg * (np.abs(zz) + ((2*np.pi* f /(g*k))**2 ) * np.abs(uu) - 
+                    2 * (2*np.pi * f/(g*k)) * np.real(uz)))
 
     # If not specified, use Nyquist frequency as max. frequency
     if fmax is None:
@@ -413,12 +425,28 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # Spectral bandwidth following Longuet-Higgins (1957)
         ds['nu_LH57'] = (['time'], np.atleast_1d(spec_bandwidth(E, f)))
         if ndim == 3:
+            # Energy directions per frequency
+            ds['dirs_freq'] = (['freq', 'time'], dirs)
+            # Dir. spread per frequency
+            ds['dspr_freq'] = (['freq', 'time'], spread)
             # Peak direction
             ds['Dp_ind'] = (['time'], np.atleast_1d(Dp))
+            # DSPR at peak freq. (average about neighboring freqs)
+            ifp = np.argwhere(ds.Ezz.values == ds.Ezz.max().item()).item()
+            ds['dspr_fp'] = (['time'], 
+                             np.atleast_1d(
+                                ds.dspr_freq.isel(freq=slice(ifp-1, ifp+2)).mean().item()))
             # Peak direction at Y95 peak freq.
             indpy = (np.abs(f - fpy)).argmin()
             Dpy = dirs[indpy]
             ds['Dp_Y95'] = (['time'], np.atleast_1d(Dpy))
+            # Save mean directional spread and mean direction
+            ds['dspr'] = (['time'], np.atleast_1d(ds_efth.dspr.item()))
+            ds['mdir'] = (['time'], np.atleast_1d(ds_efth.mdir.item()))
+            if depth is not None:
+                # Shoreward/seaward energy fluxes
+                ds['Ein'] = (['freq', 'time'], Ein)
+                ds['Eout'] = (['freq', 'time'], Eout)
     else:
         # Significant wave height
         ds['Hm0'] = ([], 4 * np.sqrt(np.sum(E)*bandwidth))
@@ -433,12 +461,26 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # Spectral bandwidth following Longuet-Higgins (1957)
         ds['nu_LH57'] = ([], spec_bandwidth(E, f))
         if ndim == 3:
+            # Energy directions per frequency
+            ds['dirs_freq'] = (['freq'], dirs)
+            # Dir. spread per frequency
+            ds['dspr_freq'] = (['freq'], spread)
             # Peak direction
             ds['Dp_ind'] = ([], np.atleast_1d(Dp).squeeze().item())
+            # DSPR at peak freq. (average about neighboring freqs)
+            ifp = np.argwhere(ds.Ezz.values == ds.Ezz.max().item()).item()
+            ds['dspr_fp'] = ([], ds.dspr_freq.isel(freq=slice(ifp-1, ifp+2)).mean().item())
             # Peak direction at Y95 peak freq.
             indpy = (np.abs(f - fpy)).argmin()
             Dpy = dirs[indpy]
             ds['Dp_Y95'] = ([], Dpy)
+            # Save directional spread and mean direction
+            ds['dspr'] = ([], ds_efth.dspr.item())
+            ds['mdir'] = ([], ds_efth.mdir.item())
+            if depth is not None:
+                # Shoreward/seaward energy fluxes
+                ds['Ein'] = (['freq'], Ein)
+                ds['Eout'] = (['freq'], Eout)
 
     # Save fmin, fmax in scalar variable attributes
     ds['Hm0'].attrs['fmin'] = fmin
@@ -456,15 +498,17 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         ds['Dp_ind'].attrs['fmax'] = fmax
         ds['Dp_Y95'].attrs['fmin'] = fmin
         ds['Dp_Y95'].attrs['fmax'] = fmax
+        ds['dspr'].attrs['fmax'] = fmax
+        ds['dspr'].attrs['fmin'] = fmin
+        ds['mdir'].attrs['fmax'] = fmax
+        ds['mdir'].attrs['fmin'] = fmin
 
     return ds
 
 
-def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=True, 
+def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=False, 
                              dtheta=2, fmin=None, fmax=None):
     """
-    function [NS,NE] = MEM_calc(a1,a2,b1,b2,en,convert)
-    
     This function calculates the Maximum Entropy Method estimate of
     the Directional Distribution of a wave field.
     
@@ -475,10 +519,6 @@ def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=True,
      Version: 1.1 - 5/2003,      Paul Jessen, NPS
      *** altered, 2/2005 ****    Jim Thomson, WHOI
      Python version, 1/2023      Mika Malila, UNC
-    
-     First Version: 1.0 - 8/00
-    
-     Latest Version: 1.1- 5/2003
     
      Written by: Paul F. Jessen
                  Department of Oceanography
@@ -509,10 +549,6 @@ def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=True,
     Returns:
         ds - xr.Dataset with directional spectrum
     """
-    
-    # Calculate directional energy spectrum based on Maximum Entropy Method (MEM)
-    # of Lygre & Krogstad, JPO V16 1986.
-
     # Switch to Krogstad notation
     d1 = a1.copy()
     d2 = b1.copy()
@@ -582,12 +618,13 @@ def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=True,
         ND = Dn.copy()
 
     # Convert directions to nautical convention (compass dir FROM)
-    theta = rpct.dirs_nautical(dtheta=dtheta)  
+    theta = rpct.dirs_nautical(dtheta=dtheta, recip=False)  
 
     # Sort spectrum according to new directions
     dsort = np.argsort(theta)
     NE = NE[:, dsort]
     theta = np.sort(theta)
+
 
     # Save output to xr.Dataset
     data_vars={'Efth': (['freq', 'direction'], NE),}
@@ -596,7 +633,7 @@ def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=True,
                             'direction': (['direction'], theta)},
                    )
     # Compute mean direction and directional spread and save to dataset
-    _, mdir, dspr = mspr(ds, key='Efth', fmin=fmin, fmax=fmax)
+    dspr, mdir = mspr(ds, key='Efth', fmin=fmin, fmax=fmax)
     ds['mdir'] = ([], mdir)
     ds['dspr'] = ([], dspr)
 
@@ -626,10 +663,11 @@ def mspr(spec_xr, key='Efth', norm=False, fmin=None, fmax=None):
     b1m = s1.integrate(coord='freq').values / m0
     thetam = np.arctan2(b1m, a1m)
     m1 = np.sqrt(b1m**2 + a1m**2)
+    # Mean directional spread
     sprm = (np.sqrt(2 - 2*(m1)) * 180/np.pi).item()
+    # Mean wave direction
     dirm = (np.mod(thetam * 180/np.pi, 360)).item()
-    spec = ef.values
-    return spec, dirm, sprm 
+    return sprm, dirm 
 
 
 def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', 
