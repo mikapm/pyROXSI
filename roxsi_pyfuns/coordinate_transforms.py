@@ -85,7 +85,8 @@ def dirs_nautical(dtheta=2, recip=False):
     return theta
 
 
-def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
+def uvw2enu(vel, heading, pitch, roll, magdec=0, deg_in=True, 
+            inverted=False):
     """
     Transform velocities (u,v,w) from instrument coordinates 
     (x,y,z) to Earth coordinates (East, North, Up) using 
@@ -106,6 +107,9 @@ def uvw2enu(vel, heading, pitch, roll, magdec, deg_in=True):
         magdec - scalar; magnetic declination (deg E)
         deg_in - bool; if True, the input angles are in degrees.
                  Set to False if input angles are in radians.
+        inverted - bool; set to True if Vector coord. system is inverted
+                   (due to instrument being upside-down when recording
+                   was started).
 
     Returns
         vel_out - rotated (E,N,U) velocities
