@@ -392,7 +392,6 @@ class TRF():
             # First compute bispectrum (slow)
             print('Calculating bispectrum ...')
             dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=h0, fp=fp,
-                                  timestamp=dfe.index[0].round('20T'), 
                                   return_krms=True)
             krms = dsb.k_rms.values
             f_krms = dsb.freq.values
