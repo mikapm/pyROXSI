@@ -227,9 +227,11 @@ for date in tqdm(date_range, desc='Date: '):
                 dss = rpws.spec_uvz(z=z, u=u, v=v, fs=4)
                 # Plot wave spectrum vs horizontal velocity spectra
                 d = seg.z_lin.mean().item() # Water depth
+                bind = seg.isel(range=bi).range.item() - d # Bin depth under z=0
                 omega = 2*np.pi * dss.freq.values # Radian frequencies
                 k = rptf.waveno_full(omega, d=d) # Wavenumbers
-                depth_corr = (np.cosh(k*d) / np.sinh(k*d)) # Hyperbolic term
+                # Hyperbolic term
+                depth_corr = (np.cosh(k*(d + 0)) / np.sinh(k*d)) 
                 Euv = (dss.Euu + dss.Evv) / (omega**2 * depth_corr**2)
                 Euv.plot(ax=ax, label='Euv bin={}'.format(bi))
             # Finally, plot surface elevation variance spectrum on top
@@ -237,13 +239,17 @@ for date in tqdm(date_range, desc='Date: '):
             # Set axes scale to log-log
             ax.set_xscale('log')
             ax.set_yscale('log')
+            ax.set_ylim([1e-3, 1e2])
             mwd = ast.mean().item()
             ax.set_title('{} - {} \n mean depth: {:.3f} m'.format(t0s, t1s, mwd))
             ax.legend()
             # Save figure
             plt.tight_layout()
-            plt.savefig(fn_fig, bbox_inches='tight', dpi=300)
+            # plt.savefig(fn_fig, bbox_inches='tight', dpi=300)
+            plt.show()
             plt.close()
+
+            raise ValueError('Stop')
         
     # ********************************************************************
     # Based on the Euv vs Ezz spectral comparison, using the max. bin below
