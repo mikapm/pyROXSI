@@ -145,9 +145,10 @@ class ADCP():
         self.patm = patm
         # Bathymetry dataset if provided
         self.bathy = bathy
-       # Get lat, lon coordinates of mooring
-        self.lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
-        self.lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
+        # Get lat, lon coordinates of mooring
+        if self.bathy is not None:
+            self.lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
+            self.lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
 
 
     def _fns_from_ser(self):
@@ -268,23 +269,206 @@ class ADCP():
         nbins = echo.shape[1] # Number of vertical bins
         dz = 0.005 # Bin interval in meters
         z = self.zp + np.arange(1, nbins+1) * dz # Depth bins
+        # Check for duplicates in etime
+        etime_ind = pd.Index(etime)
+        if etime_ind.duplicated().any() == True:
+            print('{} duplicates found in etime'.format(np.sum(
+                etime_ind.duplicated())))
+            print('duplicates: ', etime[etime_ind.duplicated()])
+            # Get sorting and duplicate indices
+            sort_ind5 = np.argsort(etime_ind)
+            dupl_ind5 = etime_ind[sort_ind5].duplicated(keep='last')
+            # Sort and remove duplicate(s) from time_arr
+            etime = etime[sort_ind5][~dupl_ind5]
+            etime_ind = pd.Index(etime)
+            print('after removal of dupl.: {} left'.format(np.sum(
+                etime_ind.duplicated())))
+            # Remove duplicates also from vb5
+            etime = etime[sort_ind5][~dupl_ind5]
         da = xr.DataArray(echo,
                           coords=[etime, z],
                           dims=['time', 'z'],
                          )
+        # Get original max, min echogram return intensities
+        emin = da.min().item()
+        emax = da.max().item()
+        # Sort by time just in case
+        da = da.sortby('time')
         # Crop to requested length
         da = da.sel(time=slice(t0, t1))
         # Interpolate to new time array if requested
         if newtime is not None:
-            da = da.interp(time=newtime, method='cubic',
+            # Nearest index for t0 and t1 in newtime
+            ntindex = pd.Index(newtime)
+            it0 = ntindex.get_indexer([t0], method='nearest').item()
+            it1 = ntindex.get_indexer([t1], method='nearest').item()
+            # Interpolate
+            da = da.interp(time=newtime[it0:it1], method='cubic',
                            kwargs={"fill_value": "extrapolate"}
                           )
+            # Mask values above/below emax,emin in interpolated array
+            da = da.where(da>=emin).where(da<=emax)
         return da
+
+
+    def ampcorr2ds(self, mat, t0=None, t1=None):
+        """
+        # Create xr.DataArray from velocity amplitude and correlation arrays.
+
+        Parameters:
+            mat - dict; matlab structure of raw Signature data
+            t0 - pd.Timestamp - start time of output da. If None, returns
+                                data from the start of the array
+            t1 - pd.Timestamp - end time of output da. If None, returns
+                                data from the start of the array
+
+        Returns:
+            dae - xr.DataArray with echogram data from inputs
+        """
+        # Read and convert general (velocity) time array
+        time_mat, time_arr = self.read_mat_times(mat=mat)
+        # Check for duplicates in time_arr
+        time_arr_ind = pd.Index(time_arr)
+        duplicates = time_arr_ind.duplicated().any()
+        if duplicates == True:
+            print('{} duplicates found in time_arr'.format(np.sum(
+                time_arr_ind.duplicated())))
+            print('duplicates: ', time_arr[time_arr_ind.duplicated()])
+            # Get sorting and duplicate indices
+            sort_ind = np.argsort(time_arr_ind)
+            dupl_ind = time_arr_ind[sort_ind].duplicated(keep='last')
+            # Sort and remove duplicate(s) from time_arr
+            time_arr = time_arr[sort_ind][~dupl_ind]
+            time_arr_ind = pd.Index(time_arr)
+            print('after removal of dupl.: {} left'.format(np.sum(
+                time_arr_ind.duplicated())))
+
+        # Read number of vertical cells for velocities
+        ncells = mat['Config']['Burst_NCells'].item().squeeze()
+        # Transducer height above bottom (based on Olavo Badaro-Marques'
+        # script Signature1000_proc_lvl_1.m)
+        # trans_hab = 31.88 / 100 # [m]
+        trans_hab = self.zp # [m]
+        # Cell size in meters
+        binsz = mat['Config']['Burst_CellSize'].item().squeeze()
+        # Check that bin size is consistent with self.binsz
+        assert float(self.binsz) == binsz, \
+            "Given sampling rate fs={} is not consistent with value in .hdr file".format(
+                self.binsz)
+        # Height of the first cell center relative to transducer
+        # (based on the Principles of Operation manual by Nortek, page 12)
+        bl_dist = mat['Config']['Burst_BlankingDistance'].item().squeeze()
+        hcc_b1 = bl_dist + binsz # height of cell center for bin #1
+        # Get array of cell-center heights
+        cell_centers = hcc_b1 + np.arange(ncells) * binsz
+        # Account for transducer height above sea floor
+        zhab = cell_centers + trans_hab
+
+        # Velocities from beams 1-4
+        vb1 = mat['Data']['Burst_VelBeam1'].item().squeeze()
+        vb2 = mat['Data']['Burst_VelBeam2'].item().squeeze()
+        vb3 = mat['Data']['Burst_VelBeam3'].item().squeeze()
+        vb4 = mat['Data']['Burst_VelBeam4'].item().squeeze()
+        # Amplitudes from beams 1-4
+        ab1 = mat['Data']['Burst_AmpBeam1'].item().squeeze()
+        ab2 = mat['Data']['Burst_AmpBeam2'].item().squeeze()
+        ab3 = mat['Data']['Burst_AmpBeam3'].item().squeeze()
+        ab4 = mat['Data']['Burst_AmpBeam4'].item().squeeze()
+        # Correlations from beams 1-4
+        cb1 = mat['Data']['Burst_CorBeam1'].item().squeeze()
+        cb2 = mat['Data']['Burst_CorBeam2'].item().squeeze()
+        cb3 = mat['Data']['Burst_CorBeam3'].item().squeeze()
+        cb4 = mat['Data']['Burst_CorBeam4'].item().squeeze()
+        # Remove duplicate(s) if applicable
+        if duplicates == True:
+            vb1 = vb1[sort_ind][~dupl_ind]
+            vb2 = vb2[sort_ind][~dupl_ind]
+            vb3 = vb3[sort_ind][~dupl_ind]
+            vb4 = vb4[sort_ind][~dupl_ind]
+            ab1 = ab1[sort_ind][~dupl_ind]
+            ab2 = ab2[sort_ind][~dupl_ind]
+            ab3 = ab3[sort_ind][~dupl_ind]
+            ab4 = ab4[sort_ind][~dupl_ind]
+            cb1 = cb1[sort_ind][~dupl_ind]
+            cb2 = cb2[sort_ind][~dupl_ind]
+            cb3 = cb3[sort_ind][~dupl_ind]
+            cb4 = cb4[sort_ind][~dupl_ind]
+        # 5th beam velocity and time
+        vb5 = mat['Data']['IBurst_VelBeam5'].item().squeeze()
+        ab5 = mat['Data']['IBurst_AmpBeam5'].item().squeeze()
+        cb5 = mat['Data']['IBurst_CorBeam5'].item().squeeze()
+        tb5 = mat['Data']['IBurst_Time'].item().squeeze()
+        # Convert to datetime
+        tb5 = pd.Series(pd.to_datetime(tb5-719529, unit='D'))
+        tb5 = tb5.dt.to_pydatetime()
+        # Check for duplicates in tb5
+        tb5_ind = pd.Index(tb5)
+        if tb5_ind.duplicated().any() == True:
+            print('{} duplicates found in tb5'.format(np.sum(
+                tb5_ind.duplicated())))
+            print('duplicates: ', tb5[tb5_ind.duplicated()])
+            # Get sorting and duplicate indices
+            sort_ind5 = np.argsort(tb5_ind)
+            dupl_ind5 = tb5_ind[sort_ind5].duplicated(keep='last')
+            # Sort and remove duplicate(s) from time_arr
+            tb5 = tb5[sort_ind5][~dupl_ind5]
+            tb5_ind = pd.Index(tb5)
+            print('after removal of dupl.: {} left'.format(np.sum(
+                tb5_ind.duplicated())))
+            # Remove duplicates also from vb5
+            vb5 = vb5[sort_ind5][~dupl_ind5]
+            ab5 = ab5[sort_ind5][~dupl_ind5]
+            cb5 = cb5[sort_ind5][~dupl_ind5]
+
+        # Convert to DataArray for interpolation
+        ds5 = xr.Dataset({'vb5':(['time', 'z'], vb5), 
+                          'ab5':(['time', 'z'], ab5), 
+                          'cb5':(['time', 'z'], cb5)},
+                          coords={'time': (['time'], tb5), 
+                                  'z': (['z'], zhab)},
+                        )
+        # Interpolate 5th beam velocity to beam 1-4 time_arr
+        dsi5 = ds5.interp(time=time_arr, method='cubic',
+                          kwargs={"fill_value": "extrapolate"}
+                         )
+        vb5i = dsi5.vb5.values
+        ab5i = dsi5.ab5.values
+        cb5i = dsi5.cb5.values
+
+        # Make output dataset
+        ds = xr.Dataset(data_vars={'vb1': (['time', 'z'], vb1), 
+                                   'vb2': (['time', 'z'], vb2),
+                                   'vb3': (['time', 'z'], vb3), 
+                                   'vb4': (['time', 'z'], vb4),
+                                   'vb5': (['time', 'z'], vb5i),
+                                   'ab1': (['time', 'z'], ab1), 
+                                   'ab2': (['time', 'z'], ab2),
+                                   'ab3': (['time', 'z'], ab3), 
+                                   'ab4': (['time', 'z'], ab4),
+                                   'ab5': (['time', 'z'], ab5i),
+                                   'cb1': (['time', 'z'], cb1), 
+                                   'cb2': (['time', 'z'], cb2),
+                                   'cb3': (['time', 'z'], cb3), 
+                                   'cb4': (['time', 'z'], cb4),
+                                   'cb5': (['time', 'z'], cb5i),
+                                   },
+                        coords={'time': (['time'], time_arr),
+                                'z': (['z'], zhab)
+                                },
+                       )
+
+        # Crop output dataset if requested
+        if t0 is not None:
+            ds = ds.sel(time=slice(t0, None))
+        if t1 is not None:
+            ds = ds.sel(time=slice(None, t1))
+
+        return ds
 
 
     def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
                      despike_vel=False, despike_ast=True, only_hpr=False,
-                     fmin=0.05, fmax=0.33,
+                     fmin=0.05, fmax=0.33, echo=False, et0=None, et1=None,
                     ):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
@@ -306,6 +490,9 @@ class ADCP():
                        pitch and roll.
             fmin - scalar; min. frequency for surface reconstruction from pressure
             fmax - scalar; max. frequency for surface reconstruction from pressure
+            echo - bool; if True, only reads and returns echogram dataarray
+            et0 - pd.Timestamp - echogram dataarray start time stamp
+            et1 - pd.Timestamp - echogram dataarray end time stamp
         
         Returns:
             ds - xarray.Dataset with data read from input .mat file
@@ -400,6 +587,15 @@ class ADCP():
                 tb5_ind.duplicated())))
             # Remove duplicates also from vb5
             vb5 = vb5[sort_ind5][~dupl_ind5]
+        if echo:
+            etime = mat['Data']['Echo1Bin1_1000kHz_Time'].item().squeeze()
+            # Convert to datetime (interpolate times to time_arr)
+            etime = pd.Series(pd.to_datetime(etime-719529, unit='D'))
+            etime = etime.dt.to_pydatetime()
+            echo = mat['Data']['Echo1Bin1_1000kHz_Echo'].item().squeeze() 
+            dae = self.echo2ds(echo, etime=etime, t0=et0, t1=et1, 
+                               newtime=time_arr)
+            return dae
         # Convert to DataArray for interpolation
         da5 = xr.DataArray(vb5,
                            coords=[tb5, np.arange(28)],
