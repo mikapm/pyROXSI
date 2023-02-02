@@ -516,6 +516,13 @@ class TRF():
             return e_L, e_NL
 
         else:
+            # Fix start and end points?
+            if fix_ends:
+                # Get indices of first and last zero-crossings of hydrostatic eta
+                zc, _, _, _ = rpzc.get_waveheights(eta_hyd, method='down')
+                # Set first and last zero crossings of e_L equal to eta_hyd
+                e_L[:zc[1]] = eta_hyd[:zc[1]]
+                e_L[zc[-2]:] = eta_hyd[zc[-2]:]
             # Only return linear reconstruction
             return e_L
 
