@@ -122,6 +122,14 @@ def uvw2enu(vel, heading, pitch, roll, magdec=0, deg_in=True,
     pt = pitch.copy()
     rl = roll.copy()
 
+    # Was Vector inverted when recording was started?
+    if inverted:
+        # Fix heading (opposite dir. of rotation)
+        hd = 360 - hd
+        # Fix pitch and roll
+        pt *= -1
+        rl *= -1
+
     # Convert angles to radians if needed
     if deg_in:
         hd *= np.pi/180
