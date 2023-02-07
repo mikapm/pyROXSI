@@ -20,6 +20,7 @@ dependencies:
   - statsmodels
   - matplotlib
   - cmocean
+  - cmcrameri
   - motionless
   - salem
   - shapely
