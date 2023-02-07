@@ -208,14 +208,23 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         n_dirs = len(direction)
         # Output ds spectral variables
         data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
-                   'Euu': (['freq'], np.zeros(n_freqs)),
-                   'Evv': (['freq'], np.zeros(n_freqs)),
-                   'Efth': (['freq', 'direction'], np.zeros((n_freqs, n_dirs))),
-                  }
+                    'Euu': (['freq'], np.zeros(n_freqs)),
+                    'Evv': (['freq'], np.zeros(n_freqs)),
+                    'Ein': (['freq'], np.zeros(n_freqs)),
+                    'Eout': (['freq'], np.zeros(n_freqs)),
+                    'Efth': (['freq', 'direction'], np.zeros((n_freqs, n_dirs))),
+                    }
+        if depth is not None:
+            data_vars['Ein'] = (['freq'], np.zeros(n_freqs))
+            data_vars['Eout'] = (['freq'], np.zeros(n_freqs))
     else:
         order = ['z']
-        data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
-                  }
+        if timestamp is not None:
+            data_vars={'Ezz': (['time', 'freq'], np.zeros((1, n_freqs))),
+                    }
+        else:
+            data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
+                    }
     fft_dict = {'{}'.format(k):np.ones(n_freqs)*np.nan for k in order}
     # Is a timestamp given?
     if timestamp is not None:
@@ -396,7 +405,8 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
             Cg = 0.5 * (2*np.pi*f) * k * (1 + (2*k*depth) / np.sinh(2*k*depth))
             g = 9.81 # gravity (m s^-2)
             # Cg = np.sqrt(g * depth) # shallow water version, see Sheremet et al, 2002
-            # energy flux (by freq) in cartesian coordinates (assumes X propagation dominates... valid near beach)
+            # energy flux (by freq) in cartesian coordinates (assumes X propagation 
+            # dominates... valid near beach)
             Ein  = (1/4 * Cg * (np.abs(zz) + ((2*np.pi * f/(g*k))**2 ) * np.abs(uu) + 
                     2 * (2*np.pi * f/(g*k)) * np.real(uz)))
             Eout = (1/4 * Cg * (np.abs(zz) + ((2*np.pi* f /(g*k))**2 ) * np.abs(uu) - 
@@ -426,9 +436,9 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         ds['nu_LH57'] = (['time'], np.atleast_1d(spec_bandwidth(E, f)))
         if ndim == 3:
             # Energy directions per frequency
-            ds['dirs_freq'] = (['freq', 'time'], dirs)
+            ds['dirs_freq'] = (['freq', 'time'], np.atleast_2d(dirs).T)
             # Dir. spread per frequency
-            ds['dspr_freq'] = (['freq', 'time'], spread)
+            ds['dspr_freq'] = (['freq', 'time'], np.atleast_2d(spread).T)
             # Peak direction
             ds['Dp_ind'] = (['time'], np.atleast_1d(Dp))
             # DSPR at peak freq. (average about neighboring freqs)
@@ -445,8 +455,8 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
             ds['mdir'] = (['time'], np.atleast_1d(ds_efth.mdir.item()))
             if depth is not None:
                 # Shoreward/seaward energy fluxes
-                ds['Ein'] = (['freq', 'time'], Ein)
-                ds['Eout'] = (['freq', 'time'], Eout)
+                ds['Ein'] = (['freq', 'time'], np.atleast_2d(Ein).T)
+                ds['Eout'] = (['freq', 'time'], np.atleast_2d(Eout).T)
     else:
         # Significant wave height
         ds['Hm0'] = ([], 4 * np.sqrt(np.sum(E)*bandwidth))
