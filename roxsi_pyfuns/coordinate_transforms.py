@@ -321,10 +321,10 @@ def beam2xyz(beam_vel, theta):
     wfac = 1 / (4 * np.cos(theta)) # For w derived from beams 1-4.
     # 3rd row: w from the average of the 4 beams.
     # 4rd row: w from the 5th beam only.
-    A = np.array([[-1, 1, 0, 0, 0],
-                  [0, 0, -1, 1, 0],
-                  [-1, -1, -1, -1, 0],
-                  [0, 0, 0, 0, -1]])
+    A = np.array([[-1,  1,  0,  0,  0],
+                  [ 0,  0, -1,  1,  0],
+                  [-1, -1, -1, -1,  0],
+                  [ 0,  0,  0,  0, -1]])
 
     # Transform velocity components bin-wise
     xyz_vel = np.zeros((4, nz, nt)) # Output array
