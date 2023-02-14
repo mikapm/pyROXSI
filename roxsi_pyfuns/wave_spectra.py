@@ -113,7 +113,7 @@ def spec_bandwidth(S, F, method='longuet'):
 
 
 def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
-             fmin=0.001,fmax=None, depth=None, hpfilt=False,  
+             fmin=0.001, fmax=None, depth=None, hpfilt=False,  
              fillvalue=None, timestamp=None):
     """
     Returns wave spectrum from time series of sea
@@ -208,23 +208,23 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         n_dirs = len(direction)
         # Output ds spectral variables
         data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
-                    'Euu': (['freq'], np.zeros(n_freqs)),
-                    'Evv': (['freq'], np.zeros(n_freqs)),
-                    'Ein': (['freq'], np.zeros(n_freqs)),
-                    'Eout': (['freq'], np.zeros(n_freqs)),
-                    'Efth': (['freq', 'direction'], np.zeros((n_freqs, n_dirs))),
-                    }
+                   'Euu': (['freq'], np.zeros(n_freqs)),
+                   'Evv': (['freq'], np.zeros(n_freqs)),
+                   'Ein': (['freq'], np.zeros(n_freqs)),
+                   'Eout': (['freq'], np.zeros(n_freqs)),
+                   'Efth': (['freq', 'direction'], np.zeros((n_freqs, n_dirs))),
+                   }
         if depth is not None:
             data_vars['Ein'] = (['freq'], np.zeros(n_freqs))
             data_vars['Eout'] = (['freq'], np.zeros(n_freqs))
     else:
         order = ['z']
-        if timestamp is not None:
-            data_vars={'Ezz': (['time', 'freq'], np.zeros((1, n_freqs))),
-                    }
-        else:
-            data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
-                    }
+#         if timestamp is not None:
+#             data_vars={'Ezz': (['time', 'freq'], np.zeros((1, n_freqs))),
+#                     }
+#         else:
+        data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
+                }
     fft_dict = {'{}'.format(k):np.ones(n_freqs)*np.nan for k in order}
     # Is a timestamp given?
     if timestamp is not None:
@@ -284,7 +284,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # Move 1st element last:
         fft_win = np.array([np.roll(row, -1) for row in fft_win]) 
         fft_win[:,-1] = 0 # Set last element to zero
-        # Save FFT windo to dict
+        # Save FFT window to dict
         fft_dict[key] = fft_win
         # Power spectra (auto-spectra)
         ps_win = np.real(fft_win * np.conj(fft_win))
@@ -300,6 +300,9 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # so need to multiply the PSD by 2.
         psd = np.mean(ps_win_merged, axis=1) / (win_len/2 * fs)
         # Save variance density spectrum to output dataset
+#         if timestamp is not None:
+#             ds['E{}{}'.format(key, key)].values = np.atleast_2d(psd)
+#         else:
         ds['E{}{}'.format(key, key)].values = psd
 
     # Get index of spectral peak
@@ -402,6 +405,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # robust to partial standing waves, but assumes shore normal propagation
         if depth is not None:
             k = rptf.waveno_full(omega=2*np.pi*f, d=depth) # linear wavenumbers 
+            # Compute group velocity per frequency/wavenumber
             Cg = 0.5 * (2*np.pi*f) * k * (1 + (2*k*depth) / np.sinh(2*k*depth))
             g = 9.81 # gravity (m s^-2)
             # Cg = np.sqrt(g * depth) # shallow water version, see Sheremet et al, 2002
@@ -417,7 +421,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         fmax = nyquist
     # Compute bulk parameters
     f_mask = np.logical_and(f>=fmin, f<=fmax) # Mask for low/high freqs
-    E = ds['Ezz'].values.copy() # Output energy (variance) spectrum
+    E = ds['Ezz'].values.squeeze().copy() # Output energy (variance) spectrum
     E = E[f_mask] # Truncate too high/low frequencies
     f = f[f_mask]
     # Save scalar variables with time coordinate if specified
@@ -680,11 +684,19 @@ def mspr(spec_xr, key='Efth', norm=False, fmin=None, fmax=None):
     return sprm, dirm 
 
 
-def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', 
-               mg=5, timestamp=None, return_krms=True):
+def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', 
+                       mg=5, timestamp=None, return_krms=True):
     """
-    Compute the bispectrum of signal x using FFT-based approach.
+    Compute the bispectrum B of signal x using FFT-based approach.
     Based on fun_compute_bispectrum.m by Kevin Martins.
+
+    Also computes bicoherence Bc and biphase Bp following Kim and Powers (1979): 
+    "Digital bispectral analysis and its application to nonlinear wave interactions"; 
+    see also e.g. Guedes et al. (2013, JGR): "Observations of wave energy fluxes 
+    and swash motions on a slow-sloping, dissipative beach".
+
+    NB: Bicoherence normalization does not work properly, so use the function
+    bispectrum() instead (below). The bispectrum() function is also a lot faster.
 
     Parameters:
         x - 1D array; input signal (hydrostatic sea surface)
@@ -731,6 +743,8 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     # Initialize arrays
     P = np.zeros(nfft+1) # Power spectrum [m^2]
     B = np.zeros((nfft+1, nfft+1)).astype(complex) # Bispectrum [m^3]
+    Bcd1 = np.zeros((nfft+1, nfft+1)).astype(float) # Denominator 1 for bicoherence
+    Bcd2 = np.zeros((nfft+1, nfft+1)).astype(float) # Denominator 2 for bicoherence
     # print('freqs={}, len(freqs)={}, df={}, P={}, B={}'.format(
     #     freqs, len(freqs), df, P.shape, B.shape))
 
@@ -838,14 +852,28 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
         # Block kk FFT
         A_loc  = A[:,kk]
         CA_loc = np.conj(A[:,kk])
-        # Compute bispectrum and PSD
+        # Compute bispectrum, bicoherence and PSD
         B += A_loc[ifr1] * A_loc[ifr2] * CA_loc[ifr3]
         P += np.abs(A_loc**2)
+        # Bicoherence denominator
+        Bcd1 += np.abs(A_loc[ifr1]*A_loc[ifr2])**2 
+        Bcd2 += np.abs(A_loc[ifr3])**2
 
-    # Expected values
+    # Expected values (i.e. averages)
     B /= nblock
     B[~ifm3val] = 0
+    Bcd1 /= nblock
+    Bcd1[~ifm3val] = 0
+    Bcd2 /= nblock
+    Bcd2[~ifm3val] = 0
     P /= nblock
+    if np.any(Bcd1==0):
+        print('Zeros in Bcd1: ', np.sum(Bcd1==0))
+    if np.any(Bcd2==0):
+        print('Zeros in Bcd2: ', np.sum(Bcd2==0))
+
+    # Normalize bicoherence
+    Bc = np.abs(B) / np.sqrt((Bcd1 * Bcd2))
 
     #  ------------------- Skewness and asymmetry ---------------------
     #  Notes: 
@@ -878,11 +906,13 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
                            np.arange(nmid+mg, nfft+1-mm, mg)]) # Frequency indices
     ifrm = ifrm[1:] # Lose first negative frequency (to comply with Matlab code)
     Bm = np.zeros((len(ifrm), len(ifrm))).astype(complex) # Merged bispec (unit m^3)
+    Bcm = np.zeros((len(ifrm), len(ifrm))).astype(float) # Merged bicoh (real)
     Pm = np.zeros(len(ifrm)) # Merged PSD (unit m^2)
 
     # Remove half of diagonals
     for ff in range(len(ifreq)):
         B[ff,ff] = 0.5 * B[ff,ff]
+        Bc[ff,ff] = 0.5 * Bc[ff,ff]
 
     # Loop over frequencies
     for jfr1 in range(len(ifrm)):
@@ -890,20 +920,28 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
         ifb1 = ifrm[jfr1] # mid of jfr1-merge-block
         # PSD
         Pm[jfr1] = np.sum(P[np.arange(ifb1-mm, ifb1+mm)])
-        # Columns for bispectrum
+        # Columns for bispectrum and bicoherence
         for jfr2 in range(len(ifrm)):
             ifb2 = ifrm[jfr2] # mid of jfr2-merge-block
             Bm[jfr1,jfr2] = np.sum(np.sum(B[np.arange(ifb1-mm, ifb1+mm), 
                                             np.arange(ifb2-mm, ifb2+mm)]))
+            Bcm[jfr1,jfr2] = np.sum(np.sum(Bc[np.arange(ifb1-mm, ifb1+mm), 
+                                              np.arange(ifb2-mm, ifb2+mm)]))
 
     # Updating arrays
     freqs = freqs[ifrm]
     df = np.abs(freqs[1]-freqs[0])
 
+    # Compute DoF as 2 * n_windows * n_freqs_merged
+    dof = 2 * nblock * (nfft/len(ifrm))
+    # The 95% significance level on zero bicoherence following Haubrich (1965)
+    b95 = np.sqrt(6 / dof)
+
     # Generate output dataset
     if timestamp is not None:
-        data_vars={'B': (['freq', 'freq'], Bm),
-                   'PST': (['freq'], Pm),
+        data_vars={'B': (['freqx', 'freqy'], Bm),
+                   'Bc': (['freqx', 'freqy'], Bcm),
+                   'PST': (['freqx'], Pm),
                    'fp': (['time'], np.atleast_1d(fp)),
                    'kp': (['time'], np.atleast_1d(kp)),
                    'h0': (['time'], np.atleast_1d(h0)),
@@ -912,16 +950,20 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
                    'Ur': (['time'], np.atleast_1d(Ur)),
                    'Sk': (['time'], np.atleast_1d(Sk)),
                    'As': (['time'], np.atleast_1d(As)),
+                   'DoF': (['time'], np.atleast_1d(dof)),
+                   'b95': (['time'], np.atleast_1d(b95)),
                   }
         time = [timestamp] # time coordinate
         # Initialize output dataset
         dsb = xr.Dataset(data_vars=data_vars, 
-                         coords={'freq': (['freq'], freqs),
+                         coords={'freqx': (['freqx'], freqs),
+                                 'freqy': (['freqy'], freqs),
                                  'time': (['time'], time)},
                         )
     else:
-        data_vars={'B': (['freq', 'freq'], Bm),
-                   'PST': (['freq'], Pm),
+        data_vars={'B': (['freqx', 'freqy'], Bm),
+                   'Bc': (['freqx', 'freqy'], Bcm),
+                   'PST': (['freqx'], Pm),
                    'fp': ([], fp),
                    'kp': ([], kp),
                    'h0': ([], h0),
@@ -930,11 +972,14 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
                    'Ur': ([], Ur),
                    'Sk': ([], Sk),
                    'As': ([], As),
+                   'DoF': ([], dof),
+                   'b95': ([], b95),
                   }
         time = [] # No time coord.
         # Initialize output dataset
         dsb = xr.Dataset(data_vars=data_vars, 
-                         coords={'freq': (['freq'], freqs),
+                         coords={'freqx': (['freqx'], freqs),
+                                 'freqy': (['freqy'], freqs),
                                 },
                         )
     if return_krms:
@@ -975,6 +1020,10 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     dsb['Sk'].attrs['long_name'] = 'Skewness parameter following Elgar and Guza (1985)'
     dsb['As'].attrs['standard_name'] = 'wave_asymmetry'
     dsb['As'].attrs['long_name'] = 'Asymmetry parameter following Elgar and Guza (1985)'
+    dsb['DoF'].attrs['standard_name'] = 'degrees_of_freedom'
+    dsb['DoF'].attrs['long_name'] = 'Degrees of freedom of bispectral estimate'
+    dsb['b95'].attrs['standard_name'] = 'significance_level'
+    dsb['b95'].attrs['long_name'] = '95-perc significance level on zero bicoherence following Haubrich (1965)'
 
     # Some global attributes
     dsb.attrs['nfft'] = '{} samples'.format(nfft)
@@ -985,3 +1034,208 @@ def bispectrum(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular',
     dsb.attrs['frequency_resolution'] = '{} Hz'.format(df)
 
     return dsb
+
+
+def bispectrum(z, wsec=256, fs=5.0, fmerge=3, fillvalue=None):
+    """
+    Bispectral function based on spec_uvz().
+    
+    Parameters:
+        z - ndarray; 1D up displacements [m]
+        wsec - window length in seconds
+        fs - sampling frequency in Hz
+        fmerge - int; freq bands to merge, must be odd
+        fillvalue - scalar; fill value to ignore
+    Returns:
+        ds - xarray.Dataset with bispectrum, bicoherence and biphase
+    """
+    # Copy input array so we don't change it
+    eta = z.copy()
+    npts = len(eta) # Number of data points
+
+    if fillvalue is not None:
+        # Remove fillvalues
+        eta = eta[eta!=fillvalue]
+
+    # Split into windows with 75% overlap
+    win_len = int(round(fs * wsec)) # window length in data points
+    if (win_len % 2) != 0: win_len -= 1 # Make win_len even
+    # Define number of windows, the 4 comes from a 75% overlap
+    n_windows = int(np.floor(4 * (npts/win_len - 1) + 1))
+    dof = 2 * n_windows * fmerge # degrees of freedom
+    #print('DoF: ', dof)
+    n_freqs = int(np.floor(win_len / (2 * fmerge))) # No. of frequency bands
+    # Calculate Nyquist frequency and bandwidth (freq. resolution)
+    nyquist = 0.5 * fs # Max spectral frequency
+    bandwidth = nyquist / n_freqs
+    # Find middle of each frequency band, only works when
+    # merging odd number of bands
+    f = 1/wsec + bandwidth/2 + bandwidth*np.arange(n_freqs)
+
+    # Minimum length and quality for further processing
+    if npts >= 2*wsec and fs >= 0.5:
+        # Detrend full eta array
+        eta = detrend(eta)
+    else:
+        print('Input data not long enough or fs too low.')
+        return np.zeros(n_freqs)
+    # Define dictionary to store U,V,Z fft windows, if applicable
+    data_vars={'B': (['freq1', 'freq2'], np.zeros((n_freqs, n_freqs))),
+               'Bc': (['freq1', 'freq2'], np.zeros((n_freqs, n_freqs))),
+               'Bp': (['freq1', 'freq2'], np.zeros((n_freqs, n_freqs))),
+               'PSD': (['freq1'], np.zeros(n_freqs)),
+               }
+    ds = xr.Dataset(data_vars=data_vars, 
+                    coords={'freq1': (['freq1'], f),
+                            'freq2': (['freq2'], f)},
+                   )
+
+    # Initialize window array
+    arr_win = np.zeros((n_windows, win_len)) 
+    arr_win = np.atleast_2d(arr_win) # Needs to also work with only z
+    # Loop over windows
+    for q in range(1, int(n_windows)+1):
+        si = int((q-1) * 0.25 * win_len) # Start index of window
+        ei = int((q-1) * 0.25*win_len + win_len) # End index of window
+        arr_win[q-1, :] = eta[si:ei].copy()
+    # Detrend individual windows (full series already detrended
+    arr_win = detrend(arr_win)
+    # Taper and rescale (to preserve variance)
+    # TODO: Options for different taper functions
+    taper = np.sin(np.arange(win_len) * np.pi/win_len)
+    arr_win_taper = arr_win * taper
+    # Find the correction factor (comparing old/new variance)
+    corr = np.sqrt(np.var(arr_win, axis=1) / np.var(arr_win_taper, axis=1))
+    # Correct for the change in variance
+    arr_win_corr = arr_win_taper * corr[:, np.newaxis]
+
+    # Calculate Fourier coefficients
+    fft_win = np.fft.fft(arr_win_corr)
+    # Second half of fft is redundant, so throw it out
+    fft_win = fft_win[:, :win_len//2]
+    # Throw out the mean (first coef) and add a zero 
+    # (to make it the right length).
+    # Move 1st element last:
+    fft_win = np.array([np.roll(row, -1) for row in fft_win]) 
+    fft_win[:,-1] = 0 # Set last element to zero
+
+    # Compute power- and bispectrum, loop over windows
+    ps_win = np.zeros((n_windows, win_len//2))
+    B_win = np.zeros((win_len//2, win_len//2)).astype(complex)
+    Bd1_win = np.zeros((win_len//2, win_len//2)).astype(float) # bicoh denominator 1
+    Bd2_win = np.zeros((win_len//2, win_len//2)).astype(float) # bicoh denominator 2
+    # Deal with f1 + f2 = f3 indices
+    ifr1, ifr2 = np.meshgrid(np.arange(win_len//2), np.arange(win_len//2))
+    ifr3 = ifr1 + ifr2
+    # Mask for indices not corresponding to f1+f2
+    ifm3val = np.logical_or((ifr3 < 0), (ifr3 >= win_len//2))
+    ifr3[ifm3val] = 0
+    # Iterate over windows and accumulate triple products
+    for w in range(n_windows):
+        win = fft_win[w, :]
+        winc = np.conj(fft_win[w, :])
+        # Compute power spectrum
+        ps_win += np.real(win * winc)
+        # Compute bispectrum
+        B_win += win[ifr1] * win[ifr2] * winc[ifr3]
+        # Denominator terms of bicoherence
+        Bd1_win += np.abs(win[ifr1] * win[ifr2])**2
+        Bd2_win += np.abs(win[ifr3])**2
+
+    # Ensemble average windows (take expected value)
+    ps_win /= n_windows
+    B_win[ifm3val] = 0
+    B_win /= n_windows
+    Bd1_win[ifm3val] = 0
+    Bd1_win /= n_windows
+    Bd2_win[ifm3val] = 0
+    Bd2_win /= n_windows
+
+    # ------------------- Merging over frequencies -------------------
+    ps_win_merged = np.zeros((n_freqs, n_windows))
+    # Initialization
+    mg = int(fmerge - np.remainder(fmerge + 1, 2))
+    mm = int((mg - 1) / 2) # Half-window for averaging
+    # ifrm = np.concatenate([np.arange(0, 1+mm-mg, -mg)[::-1], 
+    #                        np.arange(mg, win_len+1-mm, mg)]) # Frequency indices
+    ifrm = np.arange(mm, win_len//2+1-mm, mg)#[::-1]
+
+    Bmw = np.zeros((n_freqs, n_freqs, n_windows)).astype(complex)
+    Bd1w = np.zeros((n_freqs, n_freqs, n_windows)).astype(float)
+    Bd2w = np.zeros((n_freqs, n_freqs, n_windows)).astype(float)
+    # Loop over frequencies
+    for i,jfr1 in enumerate(range(n_freqs)):
+        # Rows
+        ifb1 = ifrm[jfr1] # mid of jfr1-merge-block
+        # PSD
+        ps_win_merged[jfr1,:] = np.mean(ps_win[:, ifb1-mm:ifb1+mm+1])
+        # Columns for bispectrum and bicoherence
+        for jfr2 in range(n_freqs):
+            ifb2 = ifrm[jfr2] # mid of jfr2-merge-block
+            Bmw[jfr1,jfr2,:] = np.mean(np.mean(B_win[np.arange(ifb1-mm, ifb1+mm+1), 
+                                                     np.arange(ifb2-mm, ifb2+mm+1)]))
+            Bd1w[jfr1,jfr2,:] = np.mean(np.mean(Bd1_win[np.arange(ifb1-mm, ifb1+mm+1), 
+                                                        np.arange(ifb2-mm, ifb2+mm+1)]))
+            Bd2w[jfr1,jfr2,:] = np.mean(np.mean(Bd2_win[np.arange(ifb1-mm, ifb1+mm+1), 
+                                                        np.arange(ifb2-mm, ifb2+mm+1)]))
+
+    # Ensemble average windows together:
+    # Take the average of all windows at each freq band
+    # and divide by N*(sample rate) to get power spectral density
+    # The two is b/c we threw the redundant half of the FFT away,
+    # so need to multiply the PSD by 2.
+    psd = np.mean(ps_win_merged, axis=1) / (win_len/2 * fs)
+    Bm = np.mean(Bmw, axis=2) / (win_len/2 * fs)
+    Bd1m = np.mean(Bd1w, axis=2) / (win_len/2 * fs)
+    Bd2m = np.mean(Bd2w, axis=2) / (win_len/2 * fs)
+    # Bicoherence
+    np.seterr(all="ignore") # Ignore RuntimeWarnings
+    Bc = np.abs(Bm) / np.sqrt(Bd1m*Bd2m)
+    # Bi-phase
+    
+    # Save arrays to output dataset
+    ds['PSD'].values = psd
+    ds['B'].values = Bm
+    ds['Bc'].values = Bc
+    # Save DoF and 80%, 90%, 95% and 99% thresholds for significance (Elgar & Guza, 1985)
+    b99 = np.sqrt(9.2 / (dof-1))
+    b95 = np.sqrt(6 / (dof-1))
+    b90 = np.sqrt(4.6 / (dof-1))
+    b80 = np.sqrt(3.2 / (dof-1))
+    ds['dof'] = ([], dof)
+    ds['b99'] = ([], b99)
+    ds['b95'] = ([], b95)
+    ds['b90'] = ([], b90)
+    ds['b80'] = ([], b80)
+
+    return ds
+
+
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+    # Test script, generate synthetic signal
+    fs = 4
+    a = 2 * np.sqrt(2)
+    fp = 0.1
+    t = np.arange(3*4800) / fs
+    noise_power = 1e-3 * fs / 2
+    eta = a * np.cos( 2*np.pi*fp * t) + a/4 * np.cos( 2 * 2*np.pi*fp * t) 
+    rng = np.random.default_rng()
+    noise = rng.normal(scale=np.sqrt(noise_power), size=t.shape)
+    eta += noise
+
+    # Test bispectrum
+    dsb = bispectrum(z=eta, fs=fs)
+
+    fig, axes = plt.subplots(figsize=(7,4), ncols=2)
+    dsb.PSD.plot(ax=axes[0], )
+    axes[0].axvline(x=fp, color='k', linestyle='--', alpha=0.5)
+    axes[0].axvline(x=2*fp, color='k', linestyle='--', alpha=0.5)
+    bs = dsb.Bc**2
+    # (bs.where(bs > dsb.b95)**2).plot.pcolormesh(ax=axes[1])
+    bs.plot.pcolormesh(ax=axes[1])
+    axes[1].set_xlim([0,0.5])
+    axes[1].set_ylim([0,0.5])
+
+    plt.tight_layout()
+    plt.show()
