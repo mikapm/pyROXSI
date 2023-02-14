@@ -11,6 +11,7 @@ dependencies:
   - PyPDF2
   - jupyter
   - numpy
+  - numba=0.56.4
   - scipy
   - pandas
   - geopandas=0.11.1
