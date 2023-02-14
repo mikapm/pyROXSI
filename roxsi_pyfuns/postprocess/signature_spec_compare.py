@@ -239,17 +239,17 @@ for date in tqdm(date_range, desc='Date: '):
             # Set axes scale to log-log
             ax.set_xscale('log')
             ax.set_yscale('log')
-            ax.set_ylim([1e-3, 1e2])
+            # ax.set_ylim([1e-3, 1e2])
             mwd = ast.mean().item()
             ax.set_title('{} - {} \n mean depth: {:.3f} m'.format(t0s, t1s, mwd))
             ax.legend()
             # Save figure
             plt.tight_layout()
-            # plt.savefig(fn_fig, bbox_inches='tight', dpi=300)
-            plt.show()
+            plt.savefig(fn_fig, bbox_inches='tight', dpi=300)
+            # plt.show()
             plt.close()
 
-            raise ValueError('Stop')
+            # raise ValueError('Stop')
         
     # ********************************************************************
     # Based on the Euv vs Ezz spectral comparison, using the max. bin below
