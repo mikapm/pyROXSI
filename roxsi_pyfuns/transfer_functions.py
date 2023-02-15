@@ -325,9 +325,10 @@ class TRF():
             return z
 
 
-    def p2eta_krms(self, z_hyd, h0, tail_method='constant', fc=None, fc_fact=2.5,
-                   fcmax_allowed=0.33, fmax=1.0, krms=None, f_krms=None, return_nl=True,
-                   fix_ends=True, bispec_method='uvz'):
+    def p2eta_krms(self, z_hyd, h0, tail_method='constant', fp=None, fc=None, 
+                   fc_fact=2.5, fcmax_allowed=0.33, fmax=1.0, krms=None, 
+                   f_krms=None, return_nl=True, fix_ends=True, 
+                   bispec_method='uvz'):
         """
         Fully dispersive sea-surface reconstruction from sub-surface
         pressure measurements. The reconstruction uses linear wave theory 
@@ -343,6 +344,7 @@ class TRF():
             tail_method - str; one of ['hydrostatic', 'constant'], uses either
                           hydrostatic pressure field or constant transfer 
                           function above cutoff frequency
+            fp - scalar; peak frequency [Hz]
             fc - scalar; cutoff frequency [Hz]
             fc_fact - scalar; factor to multiply fp to get fc if fc=None
             fcmax_allowed - scalar; maximum allowable cutoff frequency
@@ -375,15 +377,13 @@ class TRF():
         if fc is None:
             # Estimate power spectrum
             dss = rpws.spec_uvz(eta_hyd, fs=self.fs)
-            # Compute cutoff frequency from peak frequency
-            fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
+            if fp is None:
+                # Compute cutoff frequency from peak frequency
+                fp = 1 / dss.Tp_Y95.item() # peak freq. (Young, 1995)
             if fcmax_allowed is None:
                 fc = fc_fact * fp
             else:
                 fc = np.min((fc_fact * fp, fcmax_allowed))
-        else:
-            # Set fp to None and compute it later from fft
-            fp = None
         
         # Frequency array
         freq = np.arange(0, N/2 + 1) / (N/2) * self.fs/2
@@ -402,7 +402,7 @@ class TRF():
                 dsb = rpws.bispectrum_martins(eta_hyd, fs=self.fs, h0=h0,
                                               return_krms=True)
             krms = dsb.k_rms.values
-            f_krms = dsb.freq.values
+            f_krms = dsb.freq1.values
         else:
             if f_krms is None:
                 raise ValueError('Must also input f_krms')
