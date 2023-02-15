@@ -327,7 +327,7 @@ class TRF():
 
     def p2eta_krms(self, z_hyd, h0, tail_method='constant', fc=None, fc_fact=2.5,
                    fcmax_allowed=0.33, fmax=1.0, krms=None, f_krms=None, return_nl=True,
-                   fix_ends=True):
+                   fix_ends=True, bispec_method='uvz'):
         """
         Fully dispersive sea-surface reconstruction from sub-surface
         pressure measurements. The reconstruction uses linear wave theory 
@@ -358,6 +358,8 @@ class TRF():
                        reconstructions equal to the first and last waves of the
                        hydrostatic surface to avoid wiggles at endpoints of
                        the (non)linear reconstructions.
+            bispec_method - str; Bispectral method to use. 
+                            Choices: ['Martins', 'uvz']
         
         Returns:
             eta_lin - array; linear surface reconstruction using K_rms [m]
@@ -391,8 +393,14 @@ class TRF():
         if krms is None:
             # First compute bispectrum (slow)
             print('Calculating bispectrum ...')
-            dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=h0, fp=fp,
-                                  return_krms=True)
+            if bispec_method == 'uvz':
+                # Use own bispectrum implementation
+                dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=h0,
+                                      return_krms=True)
+            elif bispec_method == 'Martins':
+                # Use Martins bispectrum implementation
+                dsb = rpws.bispectrum_martins(eta_hyd, fs=self.fs, h0=h0,
+                                              return_krms=True)
             krms = dsb.k_rms.values
             f_krms = dsb.freq.values
         else:
