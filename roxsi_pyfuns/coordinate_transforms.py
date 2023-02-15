@@ -65,6 +65,16 @@ def rotate_xygrid(xspan, yspan, RotRad=0):
     return np.einsum('ji, mni -> jmn', RotMatrix, np.dstack([x, y]))
 
 
+def rotate_vel(u, v, rot=0):
+    """
+    Rotate velocity components u and v by angle rot [rad].
+    """
+    # Clockwise, 2D rotation matrix
+    RotMatrix = np.array([[np.cos(rot),  np.sin(rot)],
+                          [-np.sin(rot), np.cos(rot)]])
+    return RotMatrix @ np.vstack([u, v])
+
+
 def dirs_nautical(dtheta=2, recip=False):
     """
     Make directional array in Nautical convention (compass dir from).
