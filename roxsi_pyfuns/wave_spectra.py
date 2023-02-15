@@ -5,8 +5,128 @@ Functions to estimate surface wave variance spectra.
 import numpy as np
 import xarray as xr
 from scipy.signal import detrend, windows
+from scipy import optimize
 from roxsi_pyfuns import transfer_functions as rptf
 from roxsi_pyfuns import coordinate_transforms as rpct
+
+
+def waveno_deep(omega):
+    """
+    Returns wavenumber array assuming linear deep water 
+    dispersion relation omega**2 = g*k.
+    Parameters:
+        f - np.array; radian frequency array
+    Returns:
+        k - wavenumber
+    """
+    # Make sure omega is a numpy array
+    omega = np.atleast_1d(omega)
+    return omega**2 / 9.81
+
+
+def waveno_shallow(omega, d):
+    """
+    Returns peak wavelength assuming shallow water 
+    linear dispersion relation omega = k*sqrt(gd).
+    Parameters:
+        omega - np.array; radian frequency array
+        d - scalar; water depth (m)
+    Returns:
+        k - np.array; wavenumber array
+    """
+    # Make sure omega is a numpy array
+    omega = np.atleast_1d(omega)
+    return omega / np.sqrt(9.81 * d)
+
+
+def waveno_full(omega, d, k0=None, **kwargs):
+    """
+    Returns wavelength array assuming full linear 
+    dispersion relation omega**2 = g*k * tanh(k*d).
+    Uses shallow-water wavenumber array as initial guess unless 
+    another guess is given.
+    Parameters:
+        omega - np.array; radian frequency array
+        d - scalar; water depth
+        k0 - scalar; initial guess wavelength. If None, uses S-W k
+             as initial guess.
+        **kwargs for scipy.optimize.newton()
+    Returns:
+        k - np.array; wavenumber array
+    """
+    # Make sure omega is a numpy array
+    omega = np.atleast_1d(omega)
+
+    # Function to solve
+    def f(x, omega, d): 
+        return 9.81*x * np.tanh(x*d) - omega**2
+
+    # Estimate shallow-water wavenumber if not given
+    if k0 is None:
+        k0 = waveno_shallow(omega, d)
+    # Solve f(x) for intermediate water k using secant method
+    k = optimize.newton(f, k0, args=(omega, d), **kwargs)
+
+    return k
+
+
+def k_rms(h0, f, P, B, two_sided=True):
+    """
+    Compute root-mean-square wavenumber following Herbers et al. (2002)
+    definition (Eq. 12). Function implementation based on fun_compute_rms.m
+    function by Kevin Martins.
+    
+    Parameters:
+        h0 - scalar; mean water depth
+        f - frequency array [Hz]
+        P - 1D array; power spectrum [m^2]. 
+        B - 2D array; bispectrum [m^2]. 
+        two_sided - bool; if True, input frequencies are 2-sided, 
+                    else 1-sided.
+
+    Returns:
+        krms - array or RMS wavenumbers, same shape as f
+
+    **Note: if two_sided=True: f, P and B arrays are two-sided in regards to f; a
+            f should be centered around 0 Hz.
+    """
+    # Initialisation
+    krms = np.ones_like(f) * np.nan
+    if two_sided:
+        # 2-sided frequencies
+        nmid = int(len(f) / 2) # Middle frequency (f=0)
+    else:
+        # 1-sided frequencies
+        nmid= 0
+    g = 9.81 # Gravity
+
+    df = abs(f[1]-f[0])
+    # Transforming P and B to densities
+    if two_sided:
+        P  /= df
+        B  /= df**2
+
+    # Iterate over frequencies and compute wavenumbers
+    for fi in range(len(f)):
+        # Initialisation of the cumulative sum and wavenumbers
+        sumtmp = 0 
+        krms[fi] = 2 * np.pi * f[fi] / np.sqrt(g*h0) # Linear part
+        
+        # Loop over frequencies
+        for ff in range(len(f)):
+            ifr3 = nmid + (fi-nmid) - (ff-nmid)
+            if (ifr3 >= 0) and (ifr3 < len(f)):
+                sumtmp += df * np.real(B[ff, ifr3])
+        
+        # Non-linear terms (Eqs. 19 and 20 of Martins et al., 2021)
+        Beta_fr  = h0 * (2 * np.pi * f[fi])**2 / (3*g)
+        Beta_am  = 3 * sumtmp / (2 * h0 * P[fi])
+        
+        # Non-linear wavenumber
+        krms[fi] *= np.sqrt(1 + Beta_fr - Beta_am)
+
+    return krms
+
 
 def spec_moment(S, F, order):
     """
@@ -984,7 +1104,7 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
                         )
     if return_krms:
         # Also compute rms wavenumbers K_rms following Herbers et al. (2002)
-        krms = rptf.k_rms(h0=h0, f=freqs, P=Pm, B=Bm)
+        krms = k_rms(h0=h0, f=freqs, P=Pm, B=Bm)
         dsb['k_rms'] = (['freq'], krms)
         dsb['k_rms'].attrs['standard_name'] = 'sea_surface_wave_rms_wavenumber'
         dsb['k_rms'].attrs['long_name'] = 'Root-mean-square wavenumbers following H02'
@@ -1036,7 +1156,7 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
     return dsb
 
 
-def bispectrum(z, wsec=256, fs=5.0, fmerge=3, fillvalue=None):
+def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
     """
     Bispectral function based on spec_uvz().
     
@@ -1045,17 +1165,15 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, fillvalue=None):
         wsec - window length in seconds
         fs - sampling frequency in Hz
         fmerge - int; freq bands to merge, must be odd
-        fillvalue - scalar; fill value to ignore
+        h0 - scalar; water depth [m]. Required if return_krms=True
+        return_krms - bool; if True, also returns RMS wavenumbers following
+                      Herbers et al. (2002)
     Returns:
         ds - xarray.Dataset with bispectrum, bicoherence and biphase
     """
     # Copy input array so we don't change it
     eta = z.copy()
     npts = len(eta) # Number of data points
-
-    if fillvalue is not None:
-        # Remove fillvalues
-        eta = eta[eta!=fillvalue]
 
     # Split into windows with 75% overlap
     win_len = int(round(fs * wsec)) # window length in data points
@@ -1185,9 +1303,9 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, fillvalue=None):
     # The two is b/c we threw the redundant half of the FFT away,
     # so need to multiply the PSD by 2.
     psd = np.mean(ps_win_merged, axis=1) / (win_len/2 * fs)
-    Bm = np.mean(Bmw, axis=2) / (win_len/2 * fs)
-    Bd1m = np.mean(Bd1w, axis=2) / (win_len/2 * fs)
-    Bd2m = np.mean(Bd2w, axis=2) / (win_len/2 * fs)
+    Bm = np.mean(Bmw, axis=2) / (win_len/2 * fs**2)
+    Bd1m = np.mean(Bd1w, axis=2) / (win_len/2 * fs**2)
+    Bd2m = np.mean(Bd2w, axis=2) / (win_len/2 * fs**2)
     # Bicoherence
     np.seterr(all="ignore") # Ignore RuntimeWarnings
     Bc = np.abs(Bm) / np.sqrt(Bd1m*Bd2m)
@@ -1207,6 +1325,14 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, fillvalue=None):
     ds['b95'] = ([], b95)
     ds['b90'] = ([], b90)
     ds['b80'] = ([], b80)
+
+    if return_krms:
+        # Also compute rms wavenumbers K_rms following Herbers et al. (2002)
+        krms = k_rms(h0=h0, f=f, P=psd, B=Bm, two_sided=False)
+        ds['k_rms'] = (['freq'], krms)
+        ds['k_rms'].attrs['standard_name'] = 'sea_surface_wave_rms_wavenumber'
+        ds['k_rms'].attrs['long_name'] = 'Root-mean-square wavenumbers following H02'
+        ds['k_rms'].attrs['units'] = '1/m'
 
     return ds
 
