@@ -889,7 +889,8 @@ if __name__ == '__main__':
         parser.add_argument("-dr", 
                 help=("Path to data root directory"),
                 type=str,
-                default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Vectors',
+                # default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Vectors',
+                default=r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray/Vectors',
                 )
         parser.add_argument("-midl", 
                 help=('Mooring ID (long). To loop through all, select "ALL".'),
