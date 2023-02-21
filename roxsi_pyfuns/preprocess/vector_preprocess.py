@@ -17,6 +17,7 @@ from cftime import date2num, num2date
 from roxsi_pyfuns import despike as rpd
 from roxsi_pyfuns import coordinate_transforms as rpct
 from roxsi_pyfuns import transfer_functions as rptf
+from roxsi_pyfuns import wave_spectra as rpws
 
 class ADV():
     """
@@ -24,7 +25,7 @@ class ADV():
     """
     def __init__(self, datadir, mooring_id, zp=0.08, fs=16, burstlen=1200, 
                  magdec=12.86, outdir=None, mooring_info=None, patm=None, 
-                 instr='Nortek Vector'):
+                 bathy=None, instr='Nortek Vector'):
         """
         Initialize Vector ADV class.
 
@@ -39,6 +40,7 @@ class ADV():
                      else, specify outdir
             mooring_info - str; path to mooring info excel file (optional)
             patm - pd.DataFrame time series of atmospheric pressure (optional)
+            bathy - xr.Dataset of SSA bathymetry (optional)
             instr - str; instrument name
         """
         self.datadir = datadir
@@ -66,12 +68,18 @@ class ADV():
             key = 'mooring_ID'
             self.mid = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
             key = 'serial_number'
-            self.mid = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
+            self.ser = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
         else:
             self.dfm = None
         # Atmospheric pressure time series, if provided
         self.patm = patm
         self.instr = instr
+        # Bathymetry dataset if provided
+        self.bathy = bathy
+        # Get lat, lon coordinates of mooring
+        if self.bathy is not None:
+            self.lon = self.bathy['{}_llc'.format(self.mid[:2])].sel(llc='longitude').item()
+            self.lat = self.bathy['{}_llc'.format(self.mid[:2])].sel(llc='latitude').item()
 
 
     def _fns_from_mid(self):
@@ -87,7 +95,7 @@ class ADV():
         self.fn_hdr = os.path.join(self.datadir, '{}.hdr'.format(self.midl))
         # Define standard netcdf output filename
         self.fn_nc = os.path.join(self.outdir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
-            self.midl))
+            self.ser))
 
 
     def _read_hdr(self):
@@ -264,11 +272,45 @@ class ADV():
                     if despike_GN02:
                         # Despike velocities following Goring and Nikora (2002)
                         self.despike_GN02(burst, corrd=corrd, interp=interp)
+
+                    # Rotate despiked velocities to East, North, Up
+                    vel_arr = np.array([burst['u_desp'].values, 
+                                        burst['v_desp'].values, 
+                                        burst['w_desp'].values]).T
+                    enu = rpct.uvw2enu(vel=vel_arr, heading=burst['heading'].values, 
+                        pitch=burst['pitch'].values, roll=burst['roll'].values, 
+                        magdec=self.magdec)
+
+                    # Save variables to dataset
+                    burst['uE'] = enu[0,:].copy()
+                    burst['uN'] = enu[1,:].copy()
+                    burst['uU'] = enu[2,:].copy()
+
+                    # Convert E,N velocities to local cross- & alongshore (x,y) components
+                    angle_met = 300 # Cross-shore angle
+                    angle_math = 270 - angle_met # Math angle to rotate
+                    if angle_math < 0:
+                        angle_math += 360
+                    angle_math = np.deg2rad(angle_math) # Radians
+                    # Rotate East and North velocities to cross-shore (cs) and 
+                    # long-shore (ls)
+                    ur, vr = rpct.rotate_vel(burst['uE'].values, burst['uN'].values, 
+                        angle_math)
+                    burst['ucs'] = ur
+                    burst['uls'] = vr
                     
                     # If requested, transform pressure to sea-surface elevation
                     if p2eta:
-                        burst['eta_lin'], burst['z_hyd'] = self.p2eta_lin(
-                            burst['pressure'], detrend_out=True, return_hyd=True)
+                        # Standard linear reconstruction (Tucker and Pitt, 2001)
+                        burst['z_lin'], burst['z_hyd'] = self.p2eta_lin(
+                            burst['pressure'], return_hyd=True)
+                        # Detrend for eta
+                        burst['eta_hyd'] = detrend(burst['z_hyd'].values)
+                        burst['eta_lin'] = detrend(burst['z_lin'].values)
+                        # K_rms reconstructions (lin. + nonlin.) following 
+                        # Martins et al (2021)
+                        burst['eta_lin_krms'], burst['eta_nl_krms'] = self.p2eta_krms(
+                            burst['z_hyd'],)
 
                     # Save burst df to list for merging
                     uvw_dfs.append(burst)
@@ -392,8 +434,8 @@ class ADV():
             df['{}_desp'.format(k)] = vel
     
 
-    def p2eta_lin(self, pt, rho0=1025, grav=9.81, M=512, fmin=0.05, fmax=0.33, 
-                  att_corr=True, detrend_out=True, return_hyd=True):
+    def p2eta_lin(self, pt, rho0=1025, grav=9.81, M=512, fmin=0.05, fmax=0.35, 
+                  att_corr=True, return_hyd=True):
         """
         Use linear transfer function to reconstruct sea-surface
         elevation time series from sub-surface pressure measurements.
@@ -410,7 +452,6 @@ class ADV():
             fmin - scalar; min. cutoff frequency
             fmax - scalar; max. cutoff frequency
             att_corr - bool; if True, applies attenuation correction
-            detrend_out - bool; if True, returns detrended signal
             return_hyd - bool; if True, returns also hydrostatic pressure head
         """
         # Copy input
@@ -423,21 +464,73 @@ class ADV():
         if pw['z_hyd'].max() == 0.0:
             print('Instrument most likely not in water')
             # Return NaN array for linear sea surface elevations
-            pw['eta_lin'] = np.ones_like(pw['z_hyd'].values) * np.nan
+            pw['z_lin'] = np.ones_like(pw['z_hyd'].values) * np.nan
         else:
             # Apply linear transfer function from p->eta
             trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
-            pw['eta_lin'] = trf.p2eta_lin(pw['z_hyd'], M=M, fmin=fmin, fmax=fmax,
+            pw['z_lin'] = trf.p2eta_lin(pw['z_hyd'], M=M, fmin=fmin, fmax=fmax,
                 att_corr=att_corr)
-            # Detrend if requested
-            if detrend_out:
-                pw['eta_lin'] = detrend(pw['eta_lin'].values)
 
         if return_hyd:
             # Return also hydrostatic pressure head
             return pw['eta_lin'], pw['z_hyd']
         else:
             return pw['eta_lin']
+
+    def p2eta_krms(self, pt, fmax=0.35, fp=None, krms=None, f_krms=None,
+                   fix_ends=True, tail_method='constant'):
+        """
+        Use linear transfer function to reconstruct sea-surface
+        elevation time series from sub-surface pressure measurements.
+
+        If self.patm dataframe of atmospheric pressure is not available,
+        this function assumes that the input time series is the hydrostatic 
+        pressure.
+
+        Parameters:
+            pt - pd.Series; time series of hydrostatic pressure head [m]
+            fmax - scalar; max. cutoff frequency
+            fp - scalar; peak frequency
+            krms - array; root-mean-square wavenumbers
+            f_krms - array; frequencies corresponding to krms
+            fix_ends - bool; if True, set first/last waves equal to 
+                       hydrostatic surface
+            tail_method - str; tail method for K_rms reconstruction.
+                          Choices: ['constant', 'hydrostatic']
+        """
+        # Copy input
+        pw = pt.copy()
+        pw = pw.to_frame(name='z_hyd') # Convert to dataframe
+        # Compute depth
+        depth = pw['z_hyd'].mean().item()
+        # Detrend
+        eta_hyd = detrend(pw['z_hyd'].values)
+
+        # Initialize TRF class
+        trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+        # Is fp given?
+        if fp is None:
+            # Compute spectrum and get fp
+            spec = rpws.spec_uvz(z=eta_hyd, fs=self.fs)
+            fp = (1 / spec.Tp_ind).item()
+        # Is K_rms given, or do we need to compute it?
+        if krms is None:
+            # Compute bispectrum and K_rms, from downsampled (at 4Hz) pressure
+            dsb = rpws.bispectrum(eta_hyd[::4], fs=self.fs, h0=depth, 
+                                  return_krms=True)
+            krms = dsb.k_rms.values
+            f_krms = dsb.freq1.values
+        
+        # Reconstruct surface
+        eta_lin_krms, eta_nl_krms = trf.p2eta_krms(
+            eta_hyd, h0=depth, fc=fmax, fcmax_allowed=fmax, f_krms=f_krms, 
+            krms=krms, return_nl=True, fmax=fmax, fp=fp, fix_ends=fix_ends,
+            tail_method=tail_method)
+        # Save to dataframe
+        pw['eta_lin_krms'] = eta_lin_krms
+        pw['eta_nl_krms'] = eta_nl_krms
+
+        return pw['eta_lin_krms'], pw['eta_nl_krms']
     
 
     def df2nc(self, df, ref_date=pd.Timestamp('2022-06-25'), 
@@ -494,14 +587,23 @@ class ADV():
                        'uxd': (['time'], df['u_desp']),
                        'uyd': (['time'], df['v_desp']),
                        'uzd': (['time'], df['w_desp']),
+                       'uE': (['time'], df['uE']),
+                       'uN': (['time'], df['uN']),
+                       'uU': (['time'], df['uU']),
+                       'ucs': (['time'], df['ucs']),
+                       'uls': (['time'], df['uls']),
                        'pressure':  (['time'], df['pressure']),
                        'z_hyd':  (['time'], df['z_hyd']),
+                       'z_lin':  (['time'], df['z_lin']),
+                       'eta_hyd':  (['time'], df['eta_hyd']),
                        'eta_lin':  (['time'], df['eta_lin']),
+                       'eta_lin_krms':  (['time'], df['eta_lin_krms']),
+                       'eta_nl_krms':  (['time'], df['eta_nl_krms']),
                        'heading_ang':  (['time'], df['heading']),
                        'pitch_ang':  (['time'], df['pitch']),
                        'roll_ang':  (['time'], df['roll']),
-                       'lat': (['lat'], [36.6250768146788]),
-                       'lon': (['lon'], [-121.94334673203694]),
+                       'lat': (['lat'], self.lat),
+                       'lon': (['lon'], self.lon),
                        },
             coords={'time': (['time'], time_vals),}
             )
@@ -512,23 +614,32 @@ class ADV():
         ds.uxd.attrs['units'] = 'm/s'
         ds.uyd.attrs['units'] = 'm/s'
         ds.uzd.attrs['units'] = 'm/s'
+        ds.uE.attrs['units'] = 'm/s'
+        ds.uN.attrs['units'] = 'm/s'
+        ds.uU.attrs['units'] = 'm/s'
+        ds.ucs.attrs['units'] = 'm/s'
+        ds.uls.attrs['units'] = 'm/s'
         ds.heading_ang.attrs['units'] = 'degrees'
         ds.pitch_ang.attrs['units'] = 'degrees'
         ds.roll_ang.attrs['units'] = 'degrees'
         ds.pressure.attrs['units'] = 'hPa'
         ds.z_hyd.attrs['units'] = 'm'
+        ds.z_lin.attrs['units'] = 'm'
+        ds.eta_hyd.attrs['units'] = 'm'
         ds.eta_lin.attrs['units'] = 'm'
+        ds.eta_lin_krms.attrs['units'] = 'm'
+        ds.eta_nl_krms.attrs['units'] = 'm'
         ds.time.encoding['units'] = time_units
         ds.time.attrs['units'] = time_units
         ds.time.attrs['standard_name'] = 'time'
         ds.time.attrs['long_name'] = 'Local time (PDT), midpoints of sampling intervals'
         ds.lat.attrs['standard_name'] = 'latitude'
-        ds.lat.attrs['long_name'] = 'Approximate latitude of small-scale array rock summit'
+        ds.lat.attrs['long_name'] = 'Approximate latitude of instrument'
         ds.lat.attrs['units'] = 'degrees_north'
         ds.lat.attrs['valid_min'] = -90.0
         ds.lat.attrs['valid_max'] = 90.0
         ds.lon.attrs['standard_name'] = 'longitude'
-        ds.lon.attrs['long_name'] = 'Approximate longitude of small-scale array rock summit'
+        ds.lon.attrs['long_name'] = 'Approximate longitude of instrument'
         ds.lon.attrs['units'] = 'degrees_east'
         ds.lon.attrs['valid_min'] = -180.0
         ds.lon.attrs['valid_max'] = 180.0
@@ -540,12 +651,21 @@ class ADV():
         ds.uxd.attrs['standard_name'] = 'sea_water_x_velocity'
         ds.uyd.attrs['standard_name'] = 'sea_water_y_velocity'
         ds.uzd.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.uE.attrs['standard_name'] = 'eastward_sea_water_velocity'
+        ds.uN.attrs['standard_name'] = 'northward_sea_water_velocity'
+        ds.uU.attrs['standard_name'] = 'upward_sea_water_velocity'
+        ds.ucs.attrs['standard_name'] = 'cross_shore_sea_water_velocity'
+        ds.uls.attrs['standard_name'] = 'long_shore_sea_water_velocity'
         ds.heading_ang.attrs['standard_name'] = 'platform_orientation'
         ds.pitch_ang.attrs['standard_name'] = 'platform_pitch_angle'
         ds.roll_ang.attrs['standard_name'] = 'platform_roll_angle'
         ds.pressure.attrs['standard_name'] = 'sea_water_pressure_due_to_sea_water'
         ds.z_hyd.attrs['standard_name'] = 'depth'
+        ds.z_lin.attrs['standard_name'] = 'depth'
+        ds.eta_hyd.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_lin_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        ds.eta_nl_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         # Long names of velocity components
         ln_ux = 'x component of raw velocity in instrument reference frame'
         ln_uy = 'y component of raw velocity in instrument reference frame'
@@ -559,6 +679,18 @@ class ADV():
         ds.uxd.attrs['long_name'] = ln_uxd
         ds.uyd.attrs['long_name'] = ln_uyd
         ds.uzd.attrs['long_name'] = ln_uzd
+        ln_uE = 'Eastward despiked velocity in geographic reference frame'
+        ln_uN = 'Northward despiked velocity in geographic reference frame'
+        ln_uU = 'Upward despiked velocity in geographic reference frame'
+        ds.uE.attrs['long_name'] = ln_uE
+        ds.uN.attrs['long_name'] = ln_uN
+        ds.uU.attrs['long_name'] = ln_uU
+        ln_ucs = 'Cross-shore despiked velocity in local coordinate system'
+        ln_uls = 'Long-shore despiked velocity in local coordinate system'
+        ds.ucs.attrs['long_name'] = ln_uE
+        ds.uls.attrs['long_name'] = ln_uN
+        ds.ucs.attrs['zero_deg'] = '300 deg'
+        ds.uls.attrs['zero_deg'] = '210 deg'
         ln_head = ('Linearly interpolated instrument heading time series in ' + 
                    'instrument reference frame')
         ds.heading_ang.attrs['long_name'] = ln_head
@@ -572,9 +704,22 @@ class ADV():
         ds.pressure.attrs['long_name'] = ln_pres
         ln_eh = ('Pressure head converted from hydrostatic pressure')
         ds.z_hyd.attrs['long_name'] = ln_eh
+        ln_zl = ('Linear distance from bottom to surface')
+        ds.z_lin.attrs['long_name'] = ln_zl
         ln_el = ('Detrended sea-surface elevation reconstructed from ' + 
                  'hydrostatic pressure using linear transfer function')
         ds.eta_lin.attrs['long_name'] = ln_el
+        ds.eta_lin.attrs['fmax'] = '{} Hz'.format(0.35)
+        ln_elk = ('Detrended sea-surface elevation reconstructed from ' + 
+                  'hydrostatic pressure using linear transfer function and' + 
+                  'root-mean-square wavenumbers.')
+        ds.eta_lin_krms.attrs['long_name'] = ln_elk
+        ds.eta_lin_krms.attrs['fmax'] = '{} Hz'.format(0.35)
+        ln_enk = ('Detrended sea-surface elevation reconstructed from ' + 
+                  'hydrostatic pressure using nonlinear transfer function and' + 
+                  'root-mean-square wavenumbers.')
+        ds.eta_nl_krms.attrs['long_name'] = ln_enk
+        ds.eta_nl_krms.attrs['fmax'] = '{} Hz'.format(0.35)
         # Fill values
         ds.ux.attrs['missing_value'] = fillvalue
         ds.uy.attrs['missing_value'] = fillvalue
@@ -582,19 +727,28 @@ class ADV():
         ds.uxd.attrs['missing_value'] = fillvalue
         ds.uyd.attrs['missing_value'] = fillvalue
         ds.uzd.attrs['missing_value'] = fillvalue
+        ds.uE.attrs['missing_value'] = fillvalue
+        ds.uN.attrs['missing_value'] = fillvalue
+        ds.uU.attrs['missing_value'] = fillvalue
+        ds.ucs.attrs['missing_value'] = fillvalue
+        ds.uls.attrs['missing_value'] = fillvalue
         ds.heading_ang.attrs['missing_value'] = fillvalue
         ds.pitch_ang.attrs['missing_value'] = fillvalue
         ds.roll_ang.attrs['missing_value'] = fillvalue
         ds.pressure.attrs['missing_value'] = fillvalue
         ds.z_hyd.attrs['missing_value'] = fillvalue
+        ds.z_lin.attrs['missing_value'] = fillvalue
+        ds.eta_hyd.attrs['missing_value'] = fillvalue
         ds.eta_lin.attrs['missing_value'] = fillvalue
+        ds.eta_lin_krms.attrs['missing_value'] = fillvalue
+        ds.eta_nl_krms.attrs['missing_value'] = fillvalue
         
         # Global attributes
         ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
-                             'Vector {}'.format(self.mid))
+                             'Vector {}'.format(self.ser))
         ds.attrs['summary'] =  "Nearshore acoustic doppler velocimeter measurements."
         ds.attrs['instrument'] = 'Nortek Vector ADV'
-        ds.attrs['mooring_ID'] = self.mid
+        ds.attrs['mooring_ID'] = self.mid[:2]
         ds.attrs['burst_length'] = '{} seconds'.format(self.burstlen)
         # Read attributes from .hdr file
         if self.hdr is not None:
@@ -688,6 +842,11 @@ class ADV():
                     'uxd': {'_FillValue': fillvalue},        
                     'uyd': {'_FillValue': fillvalue},        
                     'uzd': {'_FillValue': fillvalue},        
+                    'uE': {'_FillValue': fillvalue},        
+                    'uN': {'_FillValue': fillvalue},        
+                    'uU': {'_FillValue': fillvalue},  
+                    'ucs': {'_FillValue': fillvalue},  
+                    'uls': {'_FillValue': fillvalue},  
                     'heading_ang': {'_FillValue': fillvalue},        
                     'pitch_ang': {'_FillValue': fillvalue},        
                     'roll_ang': {'_FillValue': fillvalue},        
@@ -710,12 +869,8 @@ class ADV():
         datetime format.
         """
         # Read netcdf file to xarray dataset
-        ds = xr.open_dataset(self.fn_nc)
-        # Parse time coordinate
-        time_ind = pd.to_datetime(num2date(ds.time.values, ds.time.units,  
-                                  only_use_python_datetimes=True, 
-                                  only_use_cftime_datetimes=False) 
-                                 )
+        ds = xr.decode_cf(xr.open_dataset(self.fn_nc, decode_coords='all'))
+        return ds
 
 
 # Main script
@@ -789,6 +944,11 @@ if __name__ == '__main__':
     rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
     fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
 
+    # Read bathymetry netcdf file
+    bathydir = os.path.join(rootdir, 'Bathy')
+    fn_bathy = os.path.join(bathydir, 'Asilomar_2022_SSA_bathy.nc')
+    dsb = xr.decode_cf(xr.open_dataset(fn_bathy, decode_coords='all'))
+
     # Read atmospheric pressure time series and calculate
     # atmospheric pressure anomaly
     fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
@@ -828,9 +988,10 @@ if __name__ == '__main__':
             print('Not processing Mooring ID {} due to suspicious raw data.'.format(
                 midl))
             continue
+        mid_short = midl[:2] # Short mooring ID
         # Initialize ADV class and read raw data
         adv = ADV(datadir=args.dr, mooring_id=midl, magdec=args.magdec,
-                  mooring_info=fn_minfo, outdir=outdir, patm=dfa)
+                  mooring_info=fn_minfo, outdir=outdir, patm=dfa, bathy=dsb)
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data 
