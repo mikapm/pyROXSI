@@ -254,7 +254,7 @@ class TRF():
         # Detrend data in overlapping segments 
         for ss in np.arange(0, N-N_ol, N_ol).astype(int):
             ## ss - segment start index; se - segment end index
-            se = min(ss + M, m);
+            se = min(ss + M, m)
             # Take out segment to detrend
             seg = pt[ss:se].copy()
             seglen = len(seg)
