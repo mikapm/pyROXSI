@@ -99,3 +99,21 @@ def get_waveheights(ts, method='down', zero_crossings=None):
     Ht = np.array(Ht)
 
     return zero_crossings, Hw, Hc, Ht
+
+def exceedance_prob(x):
+    """
+    Returns exceedance probabilities y for input array x. Also 
+    returns theoretical stability bound (standard deviation) around
+    mean exceedance probability following Tayfun and Fedele (2007).
+    """
+    # Make sure x is np.array
+    x = np.array(x)
+    # Compute exceedance probabilities
+    n = len(x)
+    y = 1/((n + 1)) * (np.arange(n, 0, -1))
+    # Empirical stability bound (standard dev.) following Tayfun 
+    # and Fedele (2007, Oc. Eng.) Eq. (16)
+    j = y[::-1] # inverted y array
+    std = 1 / (n+1) * np.sqrt((j * (n - j + 1)) / (n + 2))
+
+    return y, std
