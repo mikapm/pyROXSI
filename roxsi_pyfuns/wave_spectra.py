@@ -234,7 +234,7 @@ def spec_bandwidth(S, F, method='longuet'):
 
 def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
              fmin=0.001, fmax=None, depth=None, hpfilt=False,  
-             fillvalue=None, timestamp=None):
+             fillvalue=None):
     """
     Returns wave spectrum from time series of sea
     surface elevation/heave displacements z and (optional) 
@@ -260,8 +260,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
                 wave energy fluxes.
         hpfilt - bool; Set to True to high-pass filter data
         fillvalue - scalar; (optional) fill value for NaN elements
-        timestamp - if not None, assigns a time coordinate using
-                    given value to output dataset.
+
     Returns:
         ds - xarray.Dataset with spectrum and bulk parameters
     """
@@ -339,40 +338,20 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
             data_vars['Eout'] = (['freq'], np.zeros(n_freqs))
     else:
         order = ['z']
-#         if timestamp is not None:
-#             data_vars={'Ezz': (['time', 'freq'], np.zeros((1, n_freqs))),
-#                     }
-#         else:
         data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
                 }
     fft_dict = {'{}'.format(k):np.ones(n_freqs)*np.nan for k in order}
-    # Is a timestamp given?
-    if timestamp is not None:
-        time = [timestamp] # time coordinate
-        # Initialize output dataset
-        if ndim == 3:
-            ds = xr.Dataset(data_vars=data_vars, 
-                            coords={'freq': (['freq'], f),
-                                    'direction': (['direction'], np.sort(direction)),
-                                    'time': (['time'], time)},
-                           )
-        else:
-            ds = xr.Dataset(data_vars=data_vars, 
-                            coords={'freq': (['freq'], f),
-                                    'time': (['time'], time)},
-                            )
+    # Initialize output dataset
+    if ndim == 3:
+        ds = xr.Dataset(data_vars=data_vars, 
+                        coords={'freq': (['freq'], f),
+                                'direction': (['direction'], np.sort(direction)),
+                                },
+                        )
     else:
-        time = [] # No time coord.
-        # Initialize output dataset
-        if ndim == 3:
-            ds = xr.Dataset(data_vars=data_vars, 
-                            coords={'freq': (['freq'], f),
-                                    'direction': (['direction'], np.sort(direction))},
-                            )
-        else:
-            ds = xr.Dataset(data_vars=data_vars, 
-                            coords={'freq': (['freq'], f),},
-                            )
+        ds = xr.Dataset(data_vars=data_vars, 
+                        coords={'freq': (['freq'], f),},
+                        )
 
     # Loop over u, v and z and split into windows
     for i, key in zip(range(int(ndim)), order):
@@ -420,9 +399,6 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # so need to multiply the PSD by 2.
         psd = np.mean(ps_win_merged, axis=1) / (win_len/2 * fs)
         # Save variance density spectrum to output dataset
-#         if timestamp is not None:
-#             ds['E{}{}'.format(key, key)].values = np.atleast_2d(psd)
-#         else:
         ds['E{}{}'.format(key, key)].values = psd
 
     # Get index of spectral peak
@@ -544,77 +520,40 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
     E = ds['Ezz'].values.squeeze().copy() # Output energy (variance) spectrum
     E = E[f_mask] # Truncate too high/low frequencies
     f = f[f_mask]
-    # Save scalar variables with time coordinate if specified
-    if timestamp is not None:
-        # Significant wave height
-        ds['Hm0'] = (['time'], np.atleast_1d(4*np.sqrt(np.sum(E)*bandwidth)))
-        # Energy period
-        fe = np.sum(f * E) / np.sum(E)
-        ds['Te'] = (['time'], np.atleast_1d(1 / fe))
-        # Peak period (by index of max. energy)
-        ds['Tp_ind'] = (['time'], np.atleast_1d(1/f[E==E.max()][0]))
-        # Peak period following Young (1995)
-        fpy = peak_freq(E, f)
-        ds['Tp_Y95'] = (['time'], np.atleast_1d(1 / fpy))
-        # Spectral bandwidth following Longuet-Higgins (1957)
-        ds['nu_LH57'] = (['time'], np.atleast_1d(spec_bandwidth(E, f)))
-        if ndim == 3:
-            # Energy directions per frequency
-            ds['dirs_freq'] = (['freq', 'time'], np.atleast_2d(dirs).T)
-            # Dir. spread per frequency
-            ds['dspr_freq'] = (['freq', 'time'], np.atleast_2d(spread).T)
-            # Peak direction
-            ds['Dp_ind'] = (['time'], np.atleast_1d(Dp))
-            # DSPR at peak freq. (average about neighboring freqs)
-            ifp = np.argwhere(ds.Ezz.values == ds.Ezz.max().item()).item()
-            ds['dspr_fp'] = (['time'], 
-                             np.atleast_1d(
-                                ds.dspr_freq.isel(freq=slice(ifp-1, ifp+2)).mean().item()))
-            # Peak direction at Y95 peak freq.
-            indpy = (np.abs(f - fpy)).argmin()
-            Dpy = dirs[indpy]
-            ds['Dp_Y95'] = (['time'], np.atleast_1d(Dpy))
-            # Save mean directional spread and mean direction
-            ds['dspr'] = (['time'], np.atleast_1d(ds_efth.dspr.item()))
-            ds['mdir'] = (['time'], np.atleast_1d(ds_efth.mdir.item()))
-            if depth is not None:
-                # Shoreward/seaward energy fluxes
-                ds['Ein'] = (['freq', 'time'], np.atleast_2d(Ein).T)
-                ds['Eout'] = (['freq', 'time'], np.atleast_2d(Eout).T)
-    else:
-        # Significant wave height
-        ds['Hm0'] = ([], 4 * np.sqrt(np.sum(E)*bandwidth))
-        # Energy period
-        fe = np.sum(f * E) / np.sum(E)
-        ds['Te'] = ([], 1 / fe)
-        # Peak period
-        ds['Tp_ind'] = ([], 1/f[E==E.max()][0])
-        # Peak period following Young (1995)
-        fpy = peak_freq(E, f)
-        ds['Tp_Y95'] = ([], (1 / fpy))
-        # Spectral bandwidth following Longuet-Higgins (1957)
-        ds['nu_LH57'] = ([], spec_bandwidth(E, f))
-        if ndim == 3:
-            # Energy directions per frequency
-            ds['dirs_freq'] = (['freq'], dirs)
-            # Dir. spread per frequency
-            ds['dspr_freq'] = (['freq'], spread)
-            # Peak direction
-            ds['Dp_ind'] = ([], np.atleast_1d(Dp).squeeze().item())
-            # DSPR at peak freq. (average about neighboring freqs)
-            ifp = np.argwhere(ds.Ezz.values == ds.Ezz.max().item()).item()
-            ds['dspr_fp'] = ([], ds.dspr_freq.isel(freq=slice(ifp-1, ifp+2)).mean().item())
-            # Peak direction at Y95 peak freq.
-            indpy = (np.abs(f - fpy)).argmin()
-            Dpy = dirs[indpy]
-            ds['Dp_Y95'] = ([], Dpy)
-            # Save directional spread and mean direction
-            ds['dspr'] = ([], ds_efth.dspr.item())
-            ds['mdir'] = ([], ds_efth.mdir.item())
-            if depth is not None:
-                # Shoreward/seaward energy fluxes
-                ds['Ein'] = (['freq'], Ein)
-                ds['Eout'] = (['freq'], Eout)
+    
+    # Save scalar variables to output dataset
+    ds['Hm0'] = ([], 4 * np.sqrt(np.sum(E)*bandwidth)) # Sig. waveheight
+    # Energy period
+    fe = np.sum(f * E) / np.sum(E)
+    ds['Te'] = ([], 1 / fe)
+    # Peak period
+    ds['Tp_ind'] = ([], 1/f[E==E.max()][0])
+    # Peak period following Young (1995)
+    fpy = peak_freq(E, f)
+    ds['Tp_Y95'] = ([], (1 / fpy))
+    # Spectral bandwidth following Longuet-Higgins (1957)
+    ds['nu_LH57'] = ([], spec_bandwidth(E, f))
+    if ndim == 3:
+        # Energy directions per frequency
+        ds['dirs_freq'] = (['freq'], dirs)
+        # Dir. spread per frequency
+        ds['dspr_freq'] = (['freq'], spread)
+        # Peak direction
+        ds['Dp_ind'] = ([], np.atleast_1d(Dp).squeeze().item())
+        # DSPR at peak freq. (average about neighboring freqs)
+        ifp = np.argwhere(ds.Ezz.values == ds.Ezz.max().item()).item()
+        ds['dspr_fp'] = ([], ds.dspr_freq.isel(freq=slice(ifp-1, ifp+2)).mean().item())
+        # Peak direction at Y95 peak freq.
+        indpy = (np.abs(f - fpy)).argmin()
+        Dpy = dirs[indpy]
+        ds['Dp_Y95'] = ([], Dpy)
+        # Save directional spread and mean direction
+        ds['dspr'] = ([], ds_efth.dspr.item())
+        ds['mdir'] = ([], ds_efth.mdir.item())
+        if depth is not None:
+            # Shoreward/seaward energy fluxes
+            ds['Ein'] = (['freq'], Ein)
+            ds['Eout'] = (['freq'], Eout)
 
     # Save fmin, fmax in scalar variable attributes
     ds['Hm0'].attrs['fmin'] = fmin
@@ -776,7 +715,8 @@ def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=False,
 
 def mspr(spec_xr, key='Efth', norm=False, fmin=None, fmax=None):
     """
-    Mean directional spread following Kuik (1988), coded by Jan Victor Björkqvist
+    Mean directional spread following Kuik (1988), 
+    coded by Jan Victor Björkqvist
 
     Use norm=True with model data (eg WW3) (?)
     """
@@ -805,7 +745,7 @@ def mspr(spec_xr, key='Efth', norm=False, fmin=None, fmax=None):
 
 
 def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangular', 
-                       mg=5, timestamp=None, return_krms=True):
+                       mg=5, return_krms=True):
     """
     Compute the bispectrum B of signal x using FFT-based approach.
     Based on fun_compute_bispectrum.m by Kevin Martins.
@@ -828,8 +768,6 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
         wind - str; Type of window for tappering (only 'rectangular'
                implemented)
         mg - scalar; length of spectral bandwith over which to merge
-        timestamp - if not None, assigns a time coordinate using
-                    given value to output dataset.
         return_krms - bool; if True, compute rms wavenumbers following 
                       Herbers et al. (2002).
 
@@ -1058,50 +996,26 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
     b95 = np.sqrt(6 / dof)
 
     # Generate output dataset
-    if timestamp is not None:
-        data_vars={'B': (['freqx', 'freqy'], Bm),
-                   'Bc': (['freqx', 'freqy'], Bcm),
-                   'PST': (['freqx'], Pm),
-                   'fp': (['time'], np.atleast_1d(fp)),
-                   'kp': (['time'], np.atleast_1d(kp)),
-                   'h0': (['time'], np.atleast_1d(h0)),
-                   'mu': (['time'], np.atleast_1d(mu)),
-                   'eps': (['time'], np.atleast_1d(eps)),
-                   'Ur': (['time'], np.atleast_1d(Ur)),
-                   'Sk': (['time'], np.atleast_1d(Sk)),
-                   'As': (['time'], np.atleast_1d(As)),
-                   'DoF': (['time'], np.atleast_1d(dof)),
-                   'b95': (['time'], np.atleast_1d(b95)),
-                  }
-        time = [timestamp] # time coordinate
-        # Initialize output dataset
-        dsb = xr.Dataset(data_vars=data_vars, 
-                         coords={'freqx': (['freqx'], freqs),
-                                 'freqy': (['freqy'], freqs),
-                                 'time': (['time'], time)},
-                        )
-    else:
-        data_vars={'B': (['freqx', 'freqy'], Bm),
-                   'Bc': (['freqx', 'freqy'], Bcm),
-                   'PST': (['freqx'], Pm),
-                   'fp': ([], fp),
-                   'kp': ([], kp),
-                   'h0': ([], h0),
-                   'mu': ([], mu),
-                   'eps': ([], eps),
-                   'Ur': ([], Ur),
-                   'Sk': ([], Sk),
-                   'As': ([], As),
-                   'DoF': ([], dof),
-                   'b95': ([], b95),
-                  }
-        time = [] # No time coord.
-        # Initialize output dataset
-        dsb = xr.Dataset(data_vars=data_vars, 
-                         coords={'freqx': (['freqx'], freqs),
-                                 'freqy': (['freqy'], freqs),
-                                },
-                        )
+    data_vars={'B': (['freqx', 'freqy'], Bm),
+               'Bc': (['freqx', 'freqy'], Bcm),
+               'PST': (['freqx'], Pm),
+               'fp': ([], fp),
+               'kp': ([], kp),
+               'h0': ([], h0),
+               'mu': ([], mu),
+               'eps': ([], eps),
+               'Ur': ([], Ur),
+               'Sk': ([], Sk),
+               'As': ([], As),
+               'DoF': ([], dof),
+               'b95': ([], b95),
+               }
+    # Initialize output dataset
+    dsb = xr.Dataset(data_vars=data_vars, 
+                        coords={'freqx': (['freqx'], freqs),
+                                'freqy': (['freqy'], freqs),
+                            },
+                    )
     if return_krms:
         # Also compute rms wavenumbers K_rms following Herbers et al. (2002)
         krms = k_rms(h0=h0, f=freqs, P=Pm, B=Bm)
