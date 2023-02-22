@@ -33,7 +33,7 @@ def crossings_nonzero_neg2pos(data):
 
 
 # Function for zero-crossing wave-, crest-, and through heights 
-def get_waveheights(ts, method='down', zero_crossings=None):
+def get_waveheights(ts, method='down', zero_crossings=None, func=None):
     """
     Computes individual wave heights from signal ts.
 
@@ -49,6 +49,8 @@ def get_waveheights(ts, method='down', zero_crossings=None):
         ts - time series; np or xr array of measurements
         method - str; 'up' for upward-zero crossings, 'down' for downward z.c.
         zero_crossings - if None, use predefined zero-crossings
+        func - str; Choices: ['mean', 'std']. If not None, computes either
+               mean or std of values of ts between zero-crossings.
 
     Returns:
         zero_crossings - array of zero-crossing indices
@@ -56,8 +58,8 @@ def get_waveheights(ts, method='down', zero_crossings=None):
         Hc - array of zero-crossing crest heights
         Ht - array of zero-crossing trough depths
     """
-    # Make time series an np array just in case
-    eta = np.array(ts)
+    # Copy and make time series an np array just in case
+    eta = np.array(ts).copy()
 
     # Get zero-crossings if not predefined
     if zero_crossings is None:
@@ -75,30 +77,50 @@ def get_waveheights(ts, method='down', zero_crossings=None):
             zero_crossings[:-1] += int(1)
 
     # Loop over the individual waves using zero-crossing indices
-    Hc = [] # List for crest heights
-    Ht = [] # List for trough heights
-    Hw = [] # List for wave heights
-    for i in range(len(zero_crossings)-1):
-        start = zero_crossings[i]
-        end = zero_crossings[i+1]
-        # individual wave
-        wave = eta[start:end]
-        # crest of the wave
-        h_crest = np.nanmax(wave)
-        Hc.append(h_crest)
-        # trough of the wave
-        h_trough = np.nanmin(wave)
-        Ht.append(h_trough)
-        # wave height
-        h_wave = h_crest - h_trough
-        Hw.append(h_wave)
+    if func is not None:
+        Hf = [] # List for mean or std between zero-crossings
+        for i in range(len(zero_crossings)-1):
+            start = zero_crossings[i]
+            end = zero_crossings[i+1]
+            # individual wave
+            wave = eta[start:end]
+            # Mean/std value of eta during the wave
+            if func == 'mean':
+                h_f = np.nanmean(wave)
+            elif func == 'std':
+                h_f = np.nanstd(wave)
+            # Append to list
+            Hf.append(h_f)
 
-    # Make lists into np.arrays
-    Hw = np.array(Hw)
-    Hc = np.array(Hc)
-    Ht = np.array(Ht)
+        # Make lists into np.arrays
+        Hf = np.array(Hf)
 
-    return zero_crossings, Hw, Hc, Ht
+        return zero_crossings, Hf
+    else:
+        Hc = [] # List for crest heights
+        Ht = [] # List for trough heights
+        Hw = [] # List for wave heights
+        for i in range(len(zero_crossings)-1):
+            start = zero_crossings[i]
+            end = zero_crossings[i+1]
+            # individual wave
+            wave = eta[start:end]
+            # crest of the wave
+            h_crest = np.nanmax(wave)
+            Hc.append(h_crest)
+            # trough of the wave
+            h_trough = np.nanmin(wave)
+            Ht.append(h_trough)
+            # wave height
+            h_wave = h_crest - h_trough
+            Hw.append(h_wave)
+
+        # Make lists into np.arrays
+        Hw = np.array(Hw)
+        Hc = np.array(Hc)
+        Ht = np.array(Ht)
+
+        return zero_crossings, Hw, Hc, Ht
 
 def exceedance_prob(x):
     """
