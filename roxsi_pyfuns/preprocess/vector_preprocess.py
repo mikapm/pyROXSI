@@ -56,10 +56,6 @@ class ADV():
         else:
             # Use specified outdir
             self.outdir = outdir
-        # Get raw data filenames
-        self._fns_from_mid()
-        # Read config info from .hdr file
-        self._read_hdr()
         # Read mooring info excel file if provided
         if mooring_info is not None:
             self.dfm = pd.read_excel(mooring_info, 
@@ -69,8 +65,13 @@ class ADV():
             self.mid = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
             key = 'serial_number'
             self.ser = self.dfm[self.dfm['mooring_ID_long'].astype(str)==self.midl][key].item()
+            print('self.ser: ', self.ser)
         else:
             self.dfm = None
+        # Get raw data filenames
+        self._fns_from_mid()
+        # Read config info from .hdr file
+        self._read_hdr()
         # Atmospheric pressure time series, if provided
         self.patm = patm
         self.instr = instr
@@ -137,7 +138,7 @@ class ADV():
         
     def loaddata(self, despike_corr=True, despike_GN02=True,
                  interp='linear', rec_start=None, rec_end=None,
-                 p2eta=True, savenc=True, overwrite=False):
+                 p2eta=True, savenc=True, overwrite=False, date_spec=None):
         """
         Read raw data from chosen mooring ID into pandas
         dataframe. Header info can be found in .hdr files.
@@ -163,6 +164,7 @@ class ADV():
             savenc - bool; if True, saves output dataset as netcdf.
             overwrite - bool; if True, overwrites any existing netcdf file.
                         Else, reads and returns existing file if available.
+            date_spec - str (yyyymmdd); Give specific date to read/produce
         """
         # Define column names (see .hdr files for info)
         cols_dat = ['burst', 'ensemble', 'u', 'v', 'w', 
@@ -176,42 +178,46 @@ class ADV():
                     'tempC', 'analog_in', 'checksum', 
                     ] # .sen file columns
 
-        # Read and return netcdf file if it already exists
-        if os.path.isfile(self.fn_nc) and not overwrite:
-            ds = xr.decode_cf(xr.open_dataset(self.fn_nc, decode_coords='all'))
-            return ds
-        else:
-            # Read data into pandas dataframe
-            data = pd.read_table(self.fn_dat, names=cols_dat, header=None,
-                delimiter=' ', skipinitialspace=True)
+        # Read data into pandas dataframe
+        data = pd.read_table(self.fn_dat, names=cols_dat, header=None,
+            delimiter=' ', skipinitialspace=True)
 
-            # Read sensor info into another dataframe from .sen file
-            sen = pd.read_table(self.fn_sen, names=cols_sen, header=None,
-                delimiter=' ', skipinitialspace=True)
-            # Parse dates from relevant columns
-            date_cols = ['year','month','day','hour','minute','second']
-            sen['time'] = pd.to_datetime(sen[date_cols])
-            # Set timestamp as index
-            sen.set_index('time', inplace=True)
+        # Read sensor info into another dataframe from .sen file
+        sen = pd.read_table(self.fn_sen, names=cols_sen, header=None,
+            delimiter=' ', skipinitialspace=True)
+        # Parse dates from relevant columns
+        date_cols = ['year','month','day','hour','minute','second']
+        sen['time'] = pd.to_datetime(sen[date_cols])
+        # Set timestamp as index
+        sen.set_index('time', inplace=True)
 
-            # Split raw data into daily segments and save as netcdf
-            day0 = sen.index[0].day
-            month0 = sen.index[0].month
-            year0 = sen.index[0].year 
-            day1 = sen.index[-1].day
-            month1 = sen.index[-1].month
-            year1 = sen.index[-1].year 
-            # Start date
-            t0 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year0, month0, day0))
-            # End date
-            t1 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year1, month1, day1))
-            # Make time array
-            days = pd.date_range(t0, t1, freq='1D')
-            # Empty list to store daily dataframes for merging\
-            dfd_list = []
-            # Iterate over days (i is date index starting at 0)
-            dp_cnt = 0 # daily data point counter
-            for i, date in tqdm(enumerate(days)):
+        # Split raw data into daily segments and save as netcdf
+        day0 = sen.index[0].day
+        month0 = sen.index[0].month
+        year0 = sen.index[0].year 
+        day1 = sen.index[-1].day
+        month1 = sen.index[-1].month
+        year1 = sen.index[-1].year 
+        # Start date
+        t0 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year0, month0, day0))
+        # End date
+        t1 = pd.Timestamp('{:d}-{:02d}-{:02d}'.format(year1, month1, day1))
+        # Make time array
+        days = pd.date_range(t0, t1, freq='1D')
+        # Empty list to store daily dataframes for merging\
+        dfd_list = []
+        # Iterate over days (i is date index starting at 0)
+        dp_cnt = 0 # daily data point counter
+        for i, date in tqdm(enumerate(days)):
+            # Daily netcdf filename
+            datestr = DT.strftime(date, '%Y%m%d')
+            if date_spec is not None:
+                if datestr != date_spec:
+                    # Only read/process specified date
+                    continue
+            fn_nc = os.path.join(self.outdir, 
+                'Asilomar_SSA_L1_Vec_{}_{}.nc'.format(self.ser, datestr))
+            if not os.path.isfile(fn_nc):
                 # Copy daily (d) segment from sen dataframe
                 sen_d = sen.loc[DT.strftime(date, '%Y-%m-%d')].copy()
                 # Calculate number of bursts in the current day
@@ -277,8 +283,8 @@ class ADV():
                     vel_arr = np.array([burst['u_desp'].values, 
                                         burst['v_desp'].values, 
                                         burst['w_desp'].values]).T
-                    enu = rpct.uvw2enu(vel=vel_arr, heading=burst['heading'].values, 
-                        pitch=burst['pitch'].values, roll=burst['roll'].values, 
+                    enu = rpct.uvw2enu(vel=vel_arr, heading=burst_si['heading'].values, 
+                        pitch=burst_si['pitch'].values, roll=burst_si['roll'].values, 
                         magdec=self.magdec)
 
                     # Save variables to dataset
@@ -301,16 +307,28 @@ class ADV():
                     
                     # If requested, transform pressure to sea-surface elevation
                     if p2eta:
-                        # Standard linear reconstruction (Tucker and Pitt, 2001)
-                        burst['z_lin'], burst['z_hyd'] = self.p2eta_lin(
-                            burst['pressure'], return_hyd=True)
-                        # Detrend for eta
-                        burst['eta_hyd'] = detrend(burst['z_hyd'].values)
-                        burst['eta_lin'] = detrend(burst['z_lin'].values)
-                        # K_rms reconstructions (lin. + nonlin.) following 
-                        # Martins et al (2021)
-                        burst['eta_lin_krms'], burst['eta_nl_krms'] = self.p2eta_krms(
-                            burst['z_hyd'],)
+                        # Check if fp seems to make sense
+                        spec = rpws.spec_uvz(z=burst['pressure'].values, fs=self.fs)
+                        fp = (1 / spec.Tp_ind).item()
+                        if fp < 0.5:
+                            # Standard linear reconstruction (Tucker and Pitt, 2001)
+                            _, burst['z_hyd'] = self.p2eta_lin(burst['pressure'], 
+                                return_hyd=True)
+                            # Detrend for eta
+                            burst['eta_hyd'] = detrend(burst['z_hyd'].values)
+                            # burst['eta_lin'] = detrend(burst['z_lin'].values)
+                            # K_rms reconstructions (lin. + nonlin.) following 
+                            # Martins et al (2021)
+                            burst['eta_lin_krms'], _ = self.p2eta_krms(
+                                burst['z_hyd'],)
+                        else:
+                            # Something is wrong; set all to NaN
+                            burst['z_hyd'] = np.ones_like(burst['pressure'].values * np.nan)
+                            # burst['eta_hyd'] = np.ones_like(burst['pressure'].values * np.nan)
+                            # burst['z_lin'] = np.ones_like(burst['pressure'].values * np.nan)
+                            # burst['eta_lin'] = np.ones_like(burst['pressure'].values * np.nan)
+                            burst['eta_lin_krms'] = np.ones_like(burst['pressure'].values * np.nan)
+                            # burst['eta_nl_krms'] = np.ones_like(burst['pressure'].values * np.nan)
 
                     # Save burst df to list for merging
                     uvw_dfs.append(burst)
@@ -324,14 +342,15 @@ class ADV():
                 # Append daily dataframe to list for merging of whole dataset
                 dfd_list.append(uvw_d)
 
-            # Merge daily dataframes to full dataframe
-            vec = pd.concat(dfd_list)
-
-            # Save to netcdf
-            print('Converting to netcdf ...')
-            ds = self.df2nc(vec, overwrite=overwrite)
-            # Return xr.Dataset
-            return ds
+                # Save to netcdf
+                print('Converting to netcdf ...')
+                datestr_ga = DT.strftime(date, '%Y-%m-%d') # For global attributes
+                ds = self.df2nc(uvw_d, overwrite=overwrite, fn=fn_nc, 
+                    datestr=datestr_ga)
+            else:
+                ds = xr.decode_cf(xr.open_dataset(fn_nc, decode_coords='all'))
+        # Return xr.Dataset
+        return ds
     
 
     def despike_correlations(self, df, interp='linear'):
@@ -424,6 +443,9 @@ class ADV():
                 # Interpolate according to requested method
                 vel.interpolate(method=interp, limit=sec_lim*self.fs, 
                                 inplace=True)
+                if np.sum(np.isnan(vel.values)) > 0:
+                    # Also interpolate potential leading/trailing NaNs
+                    vel = vel.interpolate(method='bfill').interpolate(method='ffill')
                 # Count number of spikes detected
                 n_spikes = mask.sum()
                 # Add to iteration counter
@@ -467,15 +489,15 @@ class ADV():
             pw['z_lin'] = np.ones_like(pw['z_hyd'].values) * np.nan
         else:
             # Apply linear transfer function from p->eta
-            trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
-            pw['z_lin'] = trf.p2eta_lin(pw['z_hyd'], M=M, fmin=fmin, fmax=fmax,
+            trf = rptf.TRF(fs=self.fs, zp=self.zp,)
+            pw['z_lin'] = trf.p2z_lin(pw['z_hyd'], M=M, fmin=fmin, fmax=fmax,
                 att_corr=att_corr)
 
         if return_hyd:
             # Return also hydrostatic pressure head
-            return pw['eta_lin'], pw['z_hyd']
+            return pw['z_lin'], pw['z_hyd']
         else:
-            return pw['eta_lin']
+            return pw['z_lin']
 
     def p2eta_krms(self, pt, fmax=0.35, fp=None, krms=None, f_krms=None,
                    fix_ends=True, tail_method='constant'):
@@ -507,7 +529,7 @@ class ADV():
         eta_hyd = detrend(pw['z_hyd'].values)
 
         # Initialize TRF class
-        trf = rptf.TRF(fs=self.fs, zp=self.zp, type=self.instr)
+        trf = rptf.TRF(fs=self.fs, zp=self.zp, )
         # Is fp given?
         if fp is None:
             # Compute spectrum and get fp
@@ -515,9 +537,8 @@ class ADV():
             fp = (1 / spec.Tp_ind).item()
         # Is K_rms given, or do we need to compute it?
         if krms is None:
-            # Compute bispectrum and K_rms, from downsampled (at 4Hz) pressure
-            dsb = rpws.bispectrum(eta_hyd[::4], fs=self.fs, h0=depth, 
-                                  return_krms=True)
+            # Compute bispectrum and K_rms
+            dsb = rpws.bispectrum(eta_hyd[::4], fs=self.fs, h0=depth, return_krms=True)
             krms = dsb.k_rms.values
             f_krms = dsb.freq1.values
         
@@ -534,7 +555,8 @@ class ADV():
     
 
     def df2nc(self, df, ref_date=pd.Timestamp('2022-06-25'), 
-              overwrite=False, crop=True, fillvalue=-9999.):
+              overwrite=False, crop=False, fillvalue=-9999., fn=None,
+              datestr=None):
         """
         Convert and save pd.DataFrame of Vector data to netcdf 
         format following CF conventions.
@@ -547,13 +569,17 @@ class ADV():
             crop - bool; if True, crops time series using record_start and
                    record_end fields from mooring info excel file (self.dfm)
             fillvalue - scalar; fill value to denote missing values
+            fn - str; Path to filename. If None, uses self.fn_nc
+            datestr - str; Date+time string for global attributes
         """
+        if fn is None:
+            fn = self.fn_nc
         # Check if file already exists
-        if os.path.isfile(self.fn_nc) and not overwrite:
+        if os.path.isfile(fn) and not overwrite:
             # Read and return existing dataset
             print('Requested netCDF file already exists. ' + 
                   'Set overwrite=True to overwrite.')
-            ds = xr.open_dataset(self.fn_nc)
+            ds = xr.open_dataset(fn)
             return ds
         
         # Crop input dataframe if requested and sel.dfm exists
@@ -594,16 +620,16 @@ class ADV():
                        'uls': (['time'], df['uls']),
                        'pressure':  (['time'], df['pressure']),
                        'z_hyd':  (['time'], df['z_hyd']),
-                       'z_lin':  (['time'], df['z_lin']),
+                       # 'z_lin':  (['time'], df['z_lin']),
                        'eta_hyd':  (['time'], df['eta_hyd']),
-                       'eta_lin':  (['time'], df['eta_lin']),
+                       # 'eta_lin':  (['time'], df['eta_lin']),
                        'eta_lin_krms':  (['time'], df['eta_lin_krms']),
-                       'eta_nl_krms':  (['time'], df['eta_nl_krms']),
+                       # 'eta_nl_krms':  (['time'], df['eta_nl_krms']),
                        'heading_ang':  (['time'], df['heading']),
                        'pitch_ang':  (['time'], df['pitch']),
                        'roll_ang':  (['time'], df['roll']),
-                       'lat': (['lat'], self.lat),
-                       'lon': (['lon'], self.lon),
+                       'lat': (['lat'], np.atleast_1d(self.lat)),
+                       'lon': (['lon'], np.atleast_1d(self.lon)),
                        },
             coords={'time': (['time'], time_vals),}
             )
@@ -624,11 +650,11 @@ class ADV():
         ds.roll_ang.attrs['units'] = 'degrees'
         ds.pressure.attrs['units'] = 'hPa'
         ds.z_hyd.attrs['units'] = 'm'
-        ds.z_lin.attrs['units'] = 'm'
+        # ds.z_lin.attrs['units'] = 'm'
         ds.eta_hyd.attrs['units'] = 'm'
-        ds.eta_lin.attrs['units'] = 'm'
+        # ds.eta_lin.attrs['units'] = 'm'
         ds.eta_lin_krms.attrs['units'] = 'm'
-        ds.eta_nl_krms.attrs['units'] = 'm'
+        # ds.eta_nl_krms.attrs['units'] = 'm'
         ds.time.encoding['units'] = time_units
         ds.time.attrs['units'] = time_units
         ds.time.attrs['standard_name'] = 'time'
@@ -661,11 +687,11 @@ class ADV():
         ds.roll_ang.attrs['standard_name'] = 'platform_roll_angle'
         ds.pressure.attrs['standard_name'] = 'sea_water_pressure_due_to_sea_water'
         ds.z_hyd.attrs['standard_name'] = 'depth'
-        ds.z_lin.attrs['standard_name'] = 'depth'
+        # ds.z_lin.attrs['standard_name'] = 'depth'
         ds.eta_hyd.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
-        ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        # ds.eta_lin.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         ds.eta_lin_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
-        ds.eta_nl_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
+        # ds.eta_nl_krms.attrs['standard_name'] = 'sea_surface_height_above_mean_sea_level'
         # Long names of velocity components
         ln_ux = 'x component of raw velocity in instrument reference frame'
         ln_uy = 'y component of raw velocity in instrument reference frame'
@@ -705,11 +731,11 @@ class ADV():
         ln_eh = ('Pressure head converted from hydrostatic pressure')
         ds.z_hyd.attrs['long_name'] = ln_eh
         ln_zl = ('Linear distance from bottom to surface')
-        ds.z_lin.attrs['long_name'] = ln_zl
+        # ds.z_lin.attrs['long_name'] = ln_zl
         ln_el = ('Detrended sea-surface elevation reconstructed from ' + 
                  'hydrostatic pressure using linear transfer function')
-        ds.eta_lin.attrs['long_name'] = ln_el
-        ds.eta_lin.attrs['fmax'] = '{} Hz'.format(0.35)
+        # ds.eta_lin.attrs['long_name'] = ln_el
+        # ds.eta_lin.attrs['fmax'] = '{} Hz'.format(0.35)
         ln_elk = ('Detrended sea-surface elevation reconstructed from ' + 
                   'hydrostatic pressure using linear transfer function and' + 
                   'root-mean-square wavenumbers.')
@@ -718,34 +744,38 @@ class ADV():
         ln_enk = ('Detrended sea-surface elevation reconstructed from ' + 
                   'hydrostatic pressure using nonlinear transfer function and' + 
                   'root-mean-square wavenumbers.')
-        ds.eta_nl_krms.attrs['long_name'] = ln_enk
-        ds.eta_nl_krms.attrs['fmax'] = '{} Hz'.format(0.35)
+        # ds.eta_nl_krms.attrs['long_name'] = ln_enk
+        # ds.eta_nl_krms.attrs['fmax'] = '{} Hz'.format(0.35)
         # Fill values
-        ds.ux.attrs['missing_value'] = fillvalue
-        ds.uy.attrs['missing_value'] = fillvalue
-        ds.uz.attrs['missing_value'] = fillvalue
-        ds.uxd.attrs['missing_value'] = fillvalue
-        ds.uyd.attrs['missing_value'] = fillvalue
-        ds.uzd.attrs['missing_value'] = fillvalue
-        ds.uE.attrs['missing_value'] = fillvalue
-        ds.uN.attrs['missing_value'] = fillvalue
-        ds.uU.attrs['missing_value'] = fillvalue
-        ds.ucs.attrs['missing_value'] = fillvalue
-        ds.uls.attrs['missing_value'] = fillvalue
-        ds.heading_ang.attrs['missing_value'] = fillvalue
-        ds.pitch_ang.attrs['missing_value'] = fillvalue
-        ds.roll_ang.attrs['missing_value'] = fillvalue
-        ds.pressure.attrs['missing_value'] = fillvalue
-        ds.z_hyd.attrs['missing_value'] = fillvalue
-        ds.z_lin.attrs['missing_value'] = fillvalue
-        ds.eta_hyd.attrs['missing_value'] = fillvalue
-        ds.eta_lin.attrs['missing_value'] = fillvalue
-        ds.eta_lin_krms.attrs['missing_value'] = fillvalue
-        ds.eta_nl_krms.attrs['missing_value'] = fillvalue
+#         ds.ux.attrs['missing_value'] = fillvalue
+#         ds.uy.attrs['missing_value'] = fillvalue
+#         ds.uz.attrs['missing_value'] = fillvalue
+#         ds.uxd.attrs['missing_value'] = fillvalue
+#         ds.uyd.attrs['missing_value'] = fillvalue
+#         ds.uzd.attrs['missing_value'] = fillvalue
+#         ds.uE.attrs['missing_value'] = fillvalue
+#         ds.uN.attrs['missing_value'] = fillvalue
+#         ds.uU.attrs['missing_value'] = fillvalue
+#         ds.ucs.attrs['missing_value'] = fillvalue
+#         ds.uls.attrs['missing_value'] = fillvalue
+#         ds.heading_ang.attrs['missing_value'] = fillvalue
+#         ds.pitch_ang.attrs['missing_value'] = fillvalue
+#         ds.roll_ang.attrs['missing_value'] = fillvalue
+#         ds.pressure.attrs['missing_value'] = fillvalue
+#         ds.z_hyd.attrs['missing_value'] = fillvalue
+#         # ds.z_lin.attrs['missing_value'] = fillvalue
+#         ds.eta_hyd.attrs['missing_value'] = fillvalue
+#         # ds.eta_lin.attrs['missing_value'] = fillvalue
+#         ds.eta_lin_krms.attrs['missing_value'] = fillvalue
+#         # ds.eta_nl_krms.attrs['missing_value'] = fillvalue
         
         # Global attributes
-        ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
-                             'Vector {}'.format(self.ser))
+        if datestr is not None:
+            ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
+                                'Vector {}, date: {}'.format(self.ser, datestr))
+        else:
+            ds.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
+                                'Vector {}'.format(self.ser))
         ds.attrs['summary'] =  "Nearshore acoustic doppler velocimeter measurements."
         ds.attrs['instrument'] = 'Nortek Vector ADV'
         ds.attrs['mooring_ID'] = self.mid[:2]
@@ -814,9 +844,9 @@ class ADV():
             ds.attrs[sn_str] = sn
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
-            comments = self.dfm[self.dfm['mooring_ID']==self.mid]['notes'].item()
+            comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
             ds.attrs['comment'] = comments
-            config = self.dfm[self.dfm['mooring_ID']==self.mid]['config'].item()
+            config = self.dfm[self.dfm['mooring_ID_long']==self.midl]['config'].item()
             ds.attrs['configurations'] = config
         ds.attrs['magnetic_declination'] = '{} degrees East'.format(self.magdec)
         ds.attrs['despiking'] = ('3D phase-space despiking of velocities ' +
@@ -852,24 +882,29 @@ class ADV():
                     'roll_ang': {'_FillValue': fillvalue},        
                     'pressure': {'_FillValue': fillvalue},
                     'z_hyd': {'_FillValue': fillvalue},
-                    'eta_lin': {'_FillValue': fillvalue},
+                    'eta_hyd': {'_FillValue': fillvalue},
+                    # 'eta_lin': {'_FillValue': fillvalue},
+                    'eta_lin_krms': {'_FillValue': fillvalue},
+                    # 'eta_nl_krms': {'_FillValue': fillvalue},
                    }     
 
         # Save dataset in netcdf format
         print('Saving netcdf ...')
-        ds.to_netcdf(self.fn_nc, encoding=encoding)
+        ds.to_netcdf(fn, encoding=encoding)
 
         return ds
 
     
-    def read_vecnc(self, **kwargs):
+    def read_vecnc(self, fn=None, **kwargs):
         """
         Function wrapper to read Vector netcdf file generated by
         self.df2nc() into xarray dataset and convert time index to
         datetime format.
         """
+        if fn is None:
+            fn = self.fn_nc
         # Read netcdf file to xarray dataset
-        ds = xr.decode_cf(xr.open_dataset(self.fn_nc, decode_coords='all'))
+        ds = xr.decode_cf(xr.open_dataset(fn, decode_coords='all'))
         return ds
 
 
@@ -937,9 +972,11 @@ if __name__ == '__main__':
     # Call args parser to create variables out of input arguments
     args = parse_args(args=sys.argv[1:])
 
+    # Input data directory
+    data_in = os.path.join(args.dr, 'converted')
+
     # Define Level1 output directory
-    outdir = os.path.join(args.dr, 'Level1')
-    figdir = os.path.join(outdir, 'img')
+    outdir_base = os.path.join(args.dr, 'Level1')
 
     # Mooring info excel file path (used when initializing ADV class)
     rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
@@ -980,7 +1017,7 @@ if __name__ == '__main__':
                 'C6v01', 'L1v01', 'L2VP02', 'L4VP02', 'L5v01']
     else:
         # Only process one mooring
-        mids = [args.mid]
+        mids = [args.midl]
 
     # Iterate over mooring ID(s)
     for midl in tqdm(mids):
@@ -991,12 +1028,21 @@ if __name__ == '__main__':
             continue
         mid_short = midl[:2] # Short mooring ID
         # Initialize ADV class and read raw data
-        adv = ADV(datadir=args.dr, mooring_id=midl, magdec=args.magdec,
-                  mooring_info=fn_minfo, outdir=outdir, patm=dfa, bathy=dsb)
+        rec_start = pd.Timestamp('2022-06-26 00:00:00')
+        rec_end = pd.Timestamp('2022-07-22 00:00:00')
+        outdir = os.path.join(outdir_base, midl)
+        if not os.path.isdir(outdir):
+            print('Making outdir {} ...'.format(outdir))
+            os.mkdir(outdir)
+        figdir = os.path.join(outdir, 'img')
+        adv = ADV(datadir=data_in, mooring_id=midl, magdec=args.magdec,
+                  mooring_info=fn_minfo, outdir=outdir, patm=dfa, bathy=dsb,
+                  )
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data 
-        vec = adv.loaddata(overwrite=args.overwrite_nc)
+        vec = adv.loaddata(overwrite=args.overwrite_nc, rec_start=rec_start, 
+            rec_end=rec_end)
         
 #        # Rotate despiked velocities to (E,N,U) reference frame
 #        vel_cols = ['u_desp', 'v_desp', 'w_desp']
