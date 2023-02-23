@@ -33,7 +33,7 @@ def crossings_nonzero_neg2pos(data):
 
 
 # Function for zero-crossing wave-, crest-, and through heights 
-def get_waveheights(ts, method='down', zero_crossings=None, func=None):
+def get_waveheights(ts, method='down', zero_crossings=None, func=None, minlen=0):
     """
     Computes individual wave heights from signal ts.
 
@@ -51,6 +51,7 @@ def get_waveheights(ts, method='down', zero_crossings=None, func=None):
         zero_crossings - if None, use predefined zero-crossings
         func - str; Choices: ['mean', 'std']. If not None, computes either
                mean or std of values of ts between zero-crossings.
+        minlen - scalar; minimum sample distance between zero crossings to include
 
     Returns:
         zero_crossings - array of zero-crossing indices
@@ -78,10 +79,17 @@ def get_waveheights(ts, method='down', zero_crossings=None, func=None):
 
     # Loop over the individual waves using zero-crossing indices
     if func is not None:
+        # Remove waves with too-short period
+        zero_crossings_final = [] # List for final zero-crossings
         Hf = [] # List for mean or std between zero-crossings
         for i in range(len(zero_crossings)-1):
             start = zero_crossings[i]
             end = zero_crossings[i+1]
+            # Check if period is long enough
+            if (end - start) < minlen:
+                continue
+            else:
+                zero_crossings_final.append(start)
             # individual wave
             wave = eta[start:end]
             # Mean/std value of eta during the wave
@@ -97,12 +105,19 @@ def get_waveheights(ts, method='down', zero_crossings=None, func=None):
 
         return zero_crossings, Hf
     else:
+        # Remove waves with too-short period
+        zero_crossings_final = [] # List for final zero-crossings
         Hc = [] # List for crest heights
         Ht = [] # List for trough heights
         Hw = [] # List for wave heights
         for i in range(len(zero_crossings)-1):
             start = zero_crossings[i]
             end = zero_crossings[i+1]
+            # Check if period is long enough
+            if (end - start) < minlen:
+                continue
+            else:
+                zero_crossings_final.append(start)
             # individual wave
             wave = eta[start:end]
             # crest of the wave
@@ -116,11 +131,13 @@ def get_waveheights(ts, method='down', zero_crossings=None, func=None):
             Hw.append(h_wave)
 
         # Make lists into np.arrays
+        zero_crossings_final.append(end) # Append last zero crossing
+        zero_crossings_final = np.array(zero_crossings_final)
         Hw = np.array(Hw)
         Hc = np.array(Hc)
         Ht = np.array(Ht)
 
-        return zero_crossings, Hw, Hc, Ht
+        return zero_crossings_final, Hw, Hc, Ht
 
 def exceedance_prob(x):
     """
