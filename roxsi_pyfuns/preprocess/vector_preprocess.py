@@ -215,6 +215,9 @@ class ADV():
                 if datestr != date_spec:
                     # Only read/process specified date
                     continue
+            if rec_start is not None:
+                if pd.Timestamp(datestr) < rec_start:
+                    continue
             fn_nc = os.path.join(self.outdir, 
                 'Asilomar_SSA_L1_Vec_{}_{}.nc'.format(self.ser, datestr))
             if not os.path.isfile(fn_nc):
@@ -233,7 +236,7 @@ class ADV():
                 uvw_dfs = [] # Empty list to store u,v,w dataframes for merging
                 hpr_dfs = [] # Empty list to store sen dataframes for merging
                 burst_cols = ['burst', 'u', 'v', 'w', 
-                            'corr1', 'corr2', 'corr3', 'pressure']
+                              'corr1', 'corr2', 'corr3', 'pressure']
                 for bn, burst in enumerate(np.array_split(data_d[burst_cols], Nb)):
                     # Take out corresponding sen burst
                     senb_cols = ['heading', 'pitch', 'roll', 'tempC']
@@ -304,7 +307,7 @@ class ADV():
                         angle_math)
                     burst['ucs'] = ur
                     burst['uls'] = vr
-                    
+
                     # If requested, transform pressure to sea-surface elevation
                     if p2eta:
                         # Check if fp seems to make sense
@@ -322,6 +325,7 @@ class ADV():
                             burst['eta_lin_krms'], _ = self.p2eta_krms(
                                 burst['z_hyd'],)
                         else:
+                            print('fp: ', fp)
                             # Something is wrong; set all to NaN
                             burst['z_hyd'] = np.ones_like(burst['pressure'].values * np.nan)
                             # burst['eta_hyd'] = np.ones_like(burst['pressure'].values * np.nan)
@@ -351,6 +355,108 @@ class ADV():
                 ds = xr.decode_cf(xr.open_dataset(fn_nc, decode_coords='all'))
         # Return xr.Dataset
         return ds
+
+
+    def loaddata_old_nc(self, datadir, overwrite=False,):
+        """
+        Load data from old netcdf files and redo pressure reconstructions
+        and velocity rotations.
+
+        Parameters:
+            datadir - str; path for old netcdf files.
+            overwrite - bool; if True, overwrites any existing netcdf file.
+                        Else, reads and returns existing file if available.
+        """
+        # Read old netcdf file
+        fn_old = os.path.join(datadir, 'Asilomar_SSA_L1_Vec_{}.nc'.format(
+            self.ser))
+        dso = xr.decode_cf(xr.open_dataset(fn_old, decode_coords='all'))
+        # Save data in daily dataframes
+        t_start = pd.Timestamp(dso.time.values[0]).floor('1H')
+        t_end = pd.Timestamp(dso.time.values[-1]).ceil('1H')
+        # Iterate over dates
+        date_range = pd.date_range(t_start.floor('1D'), t_end.ceil('1D'), 
+            freq='1D')
+        for date in date_range:
+            daily_df = [] # Save daily dataframes for concatenating
+            # Daily netcdf filename
+            datestr = DT.strftime(date, '%Y%m%d')
+            fn_nc = os.path.join(self.outdir, 
+                'Asilomar_SSA_L1_Vec_{}_{}.nc'.format(self.ser, datestr))
+            # Iterate over bursts
+            burst_range = pd.date_range(date, date+pd.Timedelta(days=1),
+                freq='1H')
+            for t0 in burst_range[:-1]:
+                if t0 < t_start:
+                    continue
+                if t0 >= t_end:
+                    continue
+                # Take out segment
+                t1 = t0 + pd.Timedelta(hours=1)
+                print('t0: {}, t1: {}'.format(t0, t1))
+                spec_cols = ['ux', 'uy', 'uz', 'uxd', 'uyd', 'uzd', 
+                            'pressure', 'heading_ang', 'pitch_ang', 
+                            'roll_ang']
+                cols_df = ['u', 'v', 'w', 'u_desp', 'v_desp', 'w_desp', 
+                           'pressure', 'heading', 'pitch', 'roll', ]
+                segs = {} # Store individual variable segments for concat
+                # This only seems to work by iterating over each key individually
+                for ki, k in enumerate(spec_cols):
+                    # Take out current key
+                    seg = dso[k].sel(time=slice(t0, t1)).copy()
+                    if ki == 0:
+                        # Save timestamps
+                        segs['time'] = pd.to_datetime(seg.time.values)
+                    # Convert to pandas
+                    seg = seg.to_series()
+                    # Add seg to dict
+                    segs[cols_df[ki]] = seg.values
+                    if k == 'pressure':
+                        # Standard linear reconstruction (Tucker and Pitt, 2001)
+                        _, z_hyd = self.p2eta_lin(seg, return_hyd=True)
+                        # Detrend for eta
+                        eta_hyd = detrend(z_hyd)
+                        # K_rms reconstructions (lin. + nonlin.) following 
+                        # Martins et al (2021)
+                        eta_lin_krms, _ = self.p2eta_krms(z_hyd)
+                        # Add reconstructions to dict
+                        segs['z_hyd'] = z_hyd
+                        segs['eta_hyd'] = eta_hyd
+                        segs['eta_lin_krms'] = eta_lin_krms                    
+                # Rotate despiked velocities to East, North, Up
+                vel_arr = np.array([segs['u_desp'], segs['v_desp'], 
+                                    segs['w_desp']]).T
+                enu = rpct.uvw2enu(vel=vel_arr, heading=segs['heading'], 
+                    pitch=segs['pitch'], roll=segs['roll'], 
+                    magdec=self.magdec)
+
+                # Save variables to dataset
+                segs['uE'] = enu[0,:].copy()
+                segs['uN'] = enu[1,:].copy()
+                segs['uU'] = enu[2,:].copy()
+
+                # Convert E,N velocities to local cross- & alongshore (x,y) components
+                angle_met = 300 # Cross-shore angle
+                angle_math = 270 - angle_met # Math angle to rotate
+                if angle_math < 0:
+                    angle_math += 360
+                angle_math = np.deg2rad(angle_math) # Radians
+                # Rotate East and North velocities to cross-shore (cs) and 
+                # long-shore (ls)
+                ur, vr = rpct.rotate_vel(segs['uE'], segs['uN'], angle_math)
+                segs['ucs'] = ur
+                segs['uls'] = vr
+
+                # Combine all segments to dataframe
+                df_seg = pd.DataFrame.from_dict(segs).set_index('time')
+                # Append to daily list
+                daily_df.append(df_seg)
+            # Save daily netcdf
+            uvw_d = pd.concat(daily_df)
+            print('Converting to netcdf ...')
+            datestr_ga = DT.strftime(date, '%Y-%m-%d') # For global attributes
+            ds = self.df2nc(uvw_d, overwrite=overwrite, fn=fn_nc, 
+                datestr=datestr_ga)
     
 
     def despike_correlations(self, df, interp='linear'):
@@ -1028,7 +1134,9 @@ if __name__ == '__main__':
             continue
         mid_short = midl[:2] # Short mooring ID
         # Initialize ADV class and read raw data
-        rec_start = pd.Timestamp('2022-06-26 00:00:00')
+        rec_start = pd.Timestamp('2022-06-25 00:00:00')
+        if mid_short == 'C4':
+            rec_start = pd.Timestamp('2022-07-05 00:00:00')
         rec_end = pd.Timestamp('2022-07-22 00:00:00')
         outdir = os.path.join(outdir_base, midl)
         if not os.path.isdir(outdir):
@@ -1041,8 +1149,10 @@ if __name__ == '__main__':
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data 
-        vec = adv.loaddata(overwrite=args.overwrite_nc, rec_start=rec_start, 
-            rec_end=rec_end)
+        # vec = adv.loaddata(overwrite=args.overwrite_nc, rec_start=rec_start, 
+        #     rec_end=rec_end)
+        data_old = os.path.join(args.dr, 'Level1', 'netcdf_old')
+        vec = adv.loaddata_old_nc(datadir=data_old, overwrite=args.overwrite_nc,)
         
 #        # Rotate despiked velocities to (E,N,U) reference frame
 #        vel_cols = ['u_desp', 'v_desp', 'w_desp']
