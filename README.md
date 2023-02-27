@@ -7,6 +7,7 @@ $ mamba env create -f environment.yml
 $ conda activate roxsi
 $ # Install pip libraries
 $ /home/mikapm/miniconda3/envs/roxsi/bin/pip install ssqueezepy
+$ /home/mikapm/miniconda3/envs/roxsi/bin/pip install mat73
 ```
 
 ## Update environment
