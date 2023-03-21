@@ -383,6 +383,8 @@ class ADV():
             datestr = DT.strftime(date, '%Y%m%d')
             fn_nc = os.path.join(self.outdir, 
                 'Asilomar_SSA_L1_Vec_{}_{}.nc'.format(self.ser, datestr))
+            if os.path.isfile(fn_nc) and not overwrite:
+                continue
             # Iterate over bursts
             burst_range = pd.date_range(date, date+pd.Timedelta(days=1),
                 freq='1H')
