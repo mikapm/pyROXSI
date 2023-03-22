@@ -1239,6 +1239,8 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
     ds['b95'] = ([], b95)
     ds['b90'] = ([], b90)
     ds['b80'] = ([], b80)
+    # Depth
+    ds['h0'] = ([], h0)
 
     if return_krms:
         # Also compute rms wavenumbers K_rms following Herbers et al. (2002)
