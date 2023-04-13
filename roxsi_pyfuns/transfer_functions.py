@@ -201,8 +201,9 @@ class TRF():
         self.zp = zp
 
 
-    def p2z_lin(self, pp, M=512, fmin=0.05, fmax=0.33, 
-                att_corr=True, max_att_corr=5, return_kp=False):
+    def p2z_lin(self, pp, M=512, fmin=0.05, fmax=0.33, depth_dev=0,
+                att_corr=True, max_att_corr=5, return_kp=False, 
+                depth_k=None):
         """
         Linear transfer function from water pressure to linear depth.
 
@@ -214,11 +215,14 @@ class TRF():
             M - int; window segment length (512 by default)
             fmin - scalar; min. cutoff frequency
             fmax - scalar; max. cutoff frequency
+            depth_dev - scalar; value [m] to add to local depth (default=0)
             att_corr - bool; if True, applies attenuation correction
             max_att_corr - scalar; maximum attenuation correction.
                            Should not be higher than 5.
             return_kp - bool; set to True to also return the transfer
                         function Kp and wavenumbers ks
+            depth_k - scalar; if not None, specify depth to use for wavenumber
+                      estimation only.
         Returns:
             z - np.array; linear depth time series [m]
         """
@@ -262,19 +266,24 @@ class TRF():
             x = np.arange(seglen) # Inputs
             trend = np.polyfit(x, seg, 1)
             # Calculate mean water depth
-            dseg = np.polyval(trend, seglen/2)
+            dseg = np.polyval(trend, seglen/2) + self.zp + depth_dev
             # Remove trend
             seg_dt = seg - np.polyval(trend, x)
 
             # Calculate wavenumbers using full dispersion relation
-            ks = waveno_full(oms, d=dseg)
+            if depth_k is not None:
+                # Use specified depth for k
+                ks = waveno_full(oms, d=depth_k)
+            else:
+                ks = waveno_full(oms, d=dseg)
 
             # Apply cutoff limits to ks to avoid overflow warnings
             acidx = np.logical_or(freqs<fmin, freqs>fmax)
             ks_m = ks.copy()
             ks_m[acidx] = 0 # No correction outside of range
             # Calculate pressure response factor Kp
-            Kp = np.cosh(ks_m*self.zp) / np.cosh(ks_m*dseg)
+            Kp = (np.cosh(ks_m*np.max((0, self.zp+depth_dev))) / 
+                  np.cosh(ks_m*dseg))
             # Kp[acidx] = 1 # No correction outside of range
             if att_corr:
                 # Apply attenuation correction factor to desired range
@@ -328,7 +337,7 @@ class TRF():
     def p2eta_krms(self, z_hyd, h0, tail_method='constant', fp=None, fc=None, 
                    fc_fact=2.5, fcmax_allowed=0.33, fmax=1.0, krms=None, 
                    f_krms=None, return_nl=True, fix_ends=True, 
-                   bispec_method='uvz'):
+                   bispec_method='uvz', depth_k=None, depth_dev=0):
         """
         Fully dispersive sea-surface reconstruction from sub-surface
         pressure measurements. The reconstruction uses linear wave theory 
@@ -362,6 +371,9 @@ class TRF():
                        the (non)linear reconstructions.
             bispec_method - str; Bispectral method to use. 
                             Choices: ['Martins', 'uvz']
+            depth_dev - scalar; value [m] to add to local depth (default=0)
+            depth_k - scalar; if not None, specify depth to use for wavenumber
+                      estimation only.
         
         Returns:
             eta_lin - array; linear surface reconstruction using K_rms [m]
@@ -395,12 +407,22 @@ class TRF():
             print('Calculating bispectrum ...')
             if bispec_method == 'uvz':
                 # Use own bispectrum implementation
-                dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=h0,
-                                      return_krms=True)
+                if depth_k is not None:
+                    # Use specified depth for wavenumbers
+                    dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=depth_k,
+                                          return_krms=True)
+                else:
+                    # Use local depth
+                    dsb = rpws.bispectrum(eta_hyd, fs=self.fs, h0=h0,
+                                          return_krms=True)
             elif bispec_method == 'Martins':
                 # Use Martins bispectrum implementation
-                dsb = rpws.bispectrum_martins(eta_hyd, fs=self.fs, h0=h0,
-                                              return_krms=True)
+                if depth_k is not None:
+                    dsb = rpws.bispectrum_martins(eta_hyd, fs=self.fs, h0=depth_k,
+                                                return_krms=True)
+                else:
+                    dsb = rpws.bispectrum_martins(eta_hyd, fs=self.fs, h0=h0,
+                                                return_krms=True)
             krms = dsb.k_rms.values
             f_krms = dsb.freq1.values
         else:
@@ -440,7 +462,9 @@ class TRF():
                 # Getting dominant wavenumber from interpolated entry
                 kn0 = k_loc[i]
                 # Computing fft of linear reconstruction
-                fft_e_L[i] = fft_e_HY[i] * np.cosh(kn0*h0) / np.cosh(kn0*self.zp)
+                tf = (np.cosh(kn0*h0) / 
+                      np.cosh(kn0*np.max((0, self.zp+depth_dev)))) # TRF
+                fft_e_L[i] = fft_e_HY[i] * tf
             
             # 2 - Around the cutoff frequency, we smoothly change from measured k to:
             #     1 - k --> 0 (i.e., Kp = 1) for hydrostatic pressure field
@@ -450,13 +474,16 @@ class TRF():
             if (i > ihw_b) and (i < ihw_e):
                 if tail_method == 'hydrostatic':
                     # Last transfer function computed
-                    Kp_b = np.cosh(kn0*h0) / np.cosh(kn0*self.zp) 
+                    Kp_b = (np.cosh(kn0*h0) / 
+                            np.cosh(kn0*np.max((0, self.zp+depth_dev))))
                     Kp_e = 1 # Hydrostatic treatment
                 else:
                     # Last transfer function computed
-                    Kp_b = np.cosh(kn0*h0) / np.cosh(kn0*self.zp) 
+                    Kp_b = (np.cosh(kn0*h0) / 
+                            np.cosh(kn0*np.max((0, self.zp+depth_dev))))
                     # Value around fc
-                    Kp_e = np.cosh(ktail*h0) / np.cosh(ktail*self.zp) 
+                    Kp_e = (np.cosh(ktail*h0) / 
+                            np.cosh(ktail*np.max((0, self.zp+depth_dev))))
                 # Interpolation of Kp
                 Kp_loc = np.interp(freq[i], [freq[ihw_b], freq[ihw_e]], [Kp_b, Kp_e])
                 # Computing fft of linear reconstruction
@@ -468,7 +495,7 @@ class TRF():
                 fft_e_L[i] = fft_e_HY[i] * Kp_e # whichever last Kp_e, we use it
             
             # Coefficient for additional term of complete formula (Eq. B6 of JFM)
-            coef_EQB6 = np.sinh(kn0*self.zp) / np.sinh(kn0*h0)
+            coef_EQB6 = np.sinh(kn0*(self.zp+depth_dev)) / np.sinh(kn0*h0)
             
             # Derivatives
             fft_d1_e[i] = 1j * 2*np.pi * freq[i] * fft_e_L[i]
@@ -499,7 +526,8 @@ class TRF():
                     # Getting dominant wavenumber from interpolated entry
                     kn0 = k_loc[i]
                 # Coefficient for additional term of complete formula (Eq. B6 of JFM)
-                coef_EQB6 = np.cosh(kn0*h0) / np.cosh(kn0*self.zp)
+                coef_EQB6 = (np.cosh(kn0*h0) / 
+                             np.cosh(kn0*np.max((0, self.zp+depth_dev))))
                 # Computing G term
                 fft_G_term_eqB6[i] = coef_EQB6 * fft_G_term_eqB6[i]
                 fft_G_term_eqB6[N-i] = np.conjugate(fft_G_term_eqB6[i])
