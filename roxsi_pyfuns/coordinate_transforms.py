@@ -48,6 +48,8 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, ):
     pca.fit(vel_arr)
     # Get eigenvectors (ie rotation matrix R)
     R = pca.components_
+    # Check that determinant of R is 1
+    assert(np.allclose(np.linalg.det(R), 1))
     # Rotate components
     rot_arr = R.dot(vel_arr.T).T
     # Euler angles
