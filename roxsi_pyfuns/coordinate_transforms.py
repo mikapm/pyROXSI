@@ -3,6 +3,74 @@ Functions to perform various coordinate transforms.
 """
 
 import numpy as np
+from sklearn.decomposition import PCA
+
+
+def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, ):
+    """
+    Rotate x,y or x,y,z components according to their principal axes
+    using principal component analysis (PCA).
+
+    Parameters:
+        ux - shape N array; x-component of e.g. velocity
+        uy - shape N array; y-component of e.g. velocity
+        uz - shape N array; z-component of e.g. velocity (optional)
+        return_r - bool; if True, returns rotation matrix R
+        return_eul - bool; if True, returns Euler angles dict 'eul'
+
+    Returns:
+        rot_arr - shape (N,2) or (N,3) array; rotated vectors such that:
+            u_pc1 = rot_arr[:,0]
+            u_pc2 = rot_arr[:,1]
+            u_pc3 = rot_arr[:,2]
+        if return_r is True:
+            R - shape 3,3 array; rotation matrix (eigenvectors from PCA)
+        if return_eul is True:
+            eul - dict; Euler angles: eul1 = rotation about y axis (pitch)
+                                      eul2 = rotation about x axis (roll)
+                                      eul3 = rotation about z axis (heading)
+    """
+    # Check if 2D or 3D
+    if uz is not None:
+        # 3D array
+        ndim = 3
+        # Combine vectors into one array
+        vel_arr = np.vstack([ux, uy, uz]).T
+    else:
+        # Set return_eul to False just in case
+        return_eul = False
+        # 2D array
+        ndim = 2
+        # Combine vectors into one array
+        vel_arr = np.vstack([ux, uy]).T
+    # Get principal components
+    pca = PCA(n_components=ndim)
+    pca.fit(vel_arr)
+    # Get eigenvectors (ie rotation matrix R)
+    R = pca.components_
+    # Rotate components
+    rot_arr = R.dot(vel_arr.T).T
+    # Euler angles
+    eul = {} # Output dict
+    # Get Euler angles from rotation matrix R if ndim=3
+    if ndim == 3:
+        eul['eul1'] = -np.arcsin(R[2,0]) # Pitch
+        eul['eul2'] = np.arctan2(R[2,1], R[2,2]) # Roll
+        eul['eul3'] = np.arctan2(R[1,0] / np.cos(eul['eul2']), 
+                                R[0,0] / np.cos(eul['eul2'])) # Heading
+
+    # Only return rotated components?
+    if not return_eul and not return_r:
+        return rot_arr
+    # Return Euler angles but not R?
+    elif return_eul and not return_r:
+        return rot_arr, eul
+    # Return R but not Euler angles?
+    elif return_r and not return_eul:
+        return rot_arr, R
+    # Return all 3?
+    elif return_r and return_eul:
+        return rot_arr, R, eul
 
 
 def rotate_zgrid(xg, yg, zg, angle_rad):
