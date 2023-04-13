@@ -1130,10 +1130,10 @@ if __name__ == '__main__':
     # Iterate over mooring ID(s)
     for midl in tqdm(mids):
         # Skip mooring ID C6v01 for now, suspicious data
-        if midl == 'C6v01':
-            print('Not processing Mooring ID {} due to suspicious raw data.'.format(
-                midl))
-            continue
+#         if midl == 'C6v01':
+#             print('Not processing Mooring ID {} due to suspicious raw data.'.format(
+#                 midl))
+#             continue
         mid_short = midl[:2] # Short mooring ID
         # Initialize ADV class and read raw data
         rec_start = pd.Timestamp('2022-06-25 00:00:00')
@@ -1151,10 +1151,12 @@ if __name__ == '__main__':
         print('Reading raw data .dat file "{}" ...'.format(
             os.path.basename(adv.fn_dat)))
         # Read data 
-        # vec = adv.loaddata(overwrite=args.overwrite_nc, rec_start=rec_start, 
-        #     rec_end=rec_end)
-        data_old = os.path.join(args.dr, 'Level1', 'netcdf_old')
-        vec = adv.loaddata_old_nc(datadir=data_old, overwrite=args.overwrite_nc,)
+        if midl == 'C6v01':
+            vec = adv.loaddata(overwrite=args.overwrite_nc, rec_start=rec_start, 
+                rec_end=rec_end)
+        else:
+            data_old = os.path.join(args.dr, 'Level1', 'netcdf_old')
+            vec = adv.loaddata_old_nc(datadir=data_old, overwrite=args.overwrite_nc,)
         
 #        # Rotate despiked velocities to (E,N,U) reference frame
 #        vel_cols = ['u_desp', 'v_desp', 'w_desp']
