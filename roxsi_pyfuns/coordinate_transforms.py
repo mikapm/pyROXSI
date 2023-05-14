@@ -4,9 +4,11 @@ Functions to perform various coordinate transforms.
 
 import numpy as np
 from sklearn.decomposition import PCA
+from scipy.spatial.transform import Rotation   
 
 
-def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, ):
+def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, 
+               flipx=False, flipy=False, flipz=False):
     """
     Rotate x,y or x,y,z components according to their principal axes
     using principal component analysis (PCA).
@@ -17,6 +19,9 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, ):
         uz - shape N array; z-component of e.g. velocity (optional)
         return_r - bool; if True, returns rotation matrix R
         return_eul - bool; if True, returns Euler angles dict 'eul'
+        flipx - bool; if True, flips (*-1) first column in R
+        flipy - bool; if True, flips (*-1) second column in R
+        flipz - bool; if True, flips (*-1) third column in R
 
     Returns:
         rot_arr - shape (N,2) or (N,3) array; rotated vectors such that:
@@ -35,31 +40,50 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, ):
         # 3D array
         ndim = 3
         # Combine vectors into one array
-        vel_arr = np.vstack([ux, uy, uz]).T
+        vel_arr = np.vstack([ux.squeeze(), uy.squeeze(), uz.squeeze()]).T
     else:
         # Set return_eul to False just in case
         return_eul = False
         # 2D array
         ndim = 2
         # Combine vectors into one array
-        vel_arr = np.vstack([ux, uy]).T
+        vel_arr = np.vstack([ux.squeeze(), uy.squeeze()]).T
     # Get principal components
     pca = PCA(n_components=ndim)
     pca.fit(vel_arr)
     # Get eigenvectors (ie rotation matrix R)
     R = pca.components_
+    # Flip axes in R?
+    if flipx:
+        # R[:,0] *= (-1)
+        R[0,:] *= (-1)
+    if flipy:
+        # R[:,1] *= (-1)
+        R[1,:] *= (-1)
+    if flipz:
+        # R[:,2] *= (-1)
+        R[2,:] *= (-1)
+
     # Check that determinant of R is 1
-    assert(np.allclose(np.linalg.det(R), 1))
+#     if np.linalg.det(R) < 0:
+#         # If det(R) = -1, change the sign of the first axis
+#         R[:,0] *= (-1)
+#     assert(np.allclose(np.linalg.det(R), 1))
     # Rotate components
     rot_arr = R.dot(vel_arr.T).T
     # Euler angles
     eul = {} # Output dict
     # Get Euler angles from rotation matrix R if ndim=3
     if ndim == 3:
-        eul['eul1'] = -np.arcsin(R[2,0]) # Pitch
-        eul['eul2'] = np.arctan2(R[2,1], R[2,2]) # Roll
-        eul['eul3'] = np.arctan2(R[1,0] / np.cos(eul['eul2']), 
-                                R[0,0] / np.cos(eul['eul2'])) # Heading
+#         eul['eul1'] = -np.arcsin(R[2,0]) # Pitch
+#         eul['eul2'] = np.arctan2(R[2,1] / np.cos(eul['eul1']), 
+#                                  R[2,2] / np.cos(eul['eul1'])) # Roll
+#         eul['eul3'] = np.arctan2(R[1,0] / np.cos(eul['eul1']), 
+#                                  R[0,0] / np.cos(eul['eul1'])) # Heading
+        r = Rotation.from_matrix(R)
+        # Sequence is 'x,y,z' b/c heading is eul3 (?)
+        angles = r.as_euler("xyz", degrees=False)
+        eul['eul1'], eul['eul2'], eul['eul3'] = angles
 
     # Only return rotated components?
     if not return_eul and not return_r:
@@ -73,6 +97,54 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, ):
     # Return all 3?
     elif return_r and return_eul:
         return rot_arr, R, eul
+
+def rotate_euler(ux, uy, uz, eul1, eul2, eul3):
+    """
+    Rotate vectors ux, uy, uz by Euler angles eul1 (pitch),
+    eul2 (roll) and eul3 (heading).
+
+    Parameters:
+        ux - shape N array; x-component of e.g. velocity
+        uy - shape N array; y-component of e.g. velocity
+        uz - shape N array; z-component of e.g. velocity
+        eul1 - Euler angle for rotation about y axis (pitch)
+        eul2 - Euler angle for rotation about x axis (roll)
+        eul3 - Euler angle for rotation about z axis (heading)
+
+    Returns:
+        rot_arr - shape (N,3) array; rotated vectors such that:
+            ux_rot = rot_arr[:,0]
+            uy_rot = rot_arr[:,1]
+            uz_rot = rot_arr[:,2]
+    """
+    # Combine vectors into one array
+    vel_arr = np.vstack([ux.squeeze(), uy.squeeze(), uz.squeeze()]).T
+
+    # Generate rotation matrix about z axis (heading/yaw)
+    Rz = np.array([[np.cos(eul3), -np.sin(eul3), 0],
+                   [np.sin(eul3),  np.cos(eul3), 0],
+                   [0,             0,            1]
+                  ])
+    # Generate rotation matrix about y axis (pitch)
+    Ry = np.array([[np.cos(eul1),  0, np.sin(eul1)],
+                   [0,             1, 0           ],
+                   [-np.sin(eul1), 0, np.cos(eul1)]
+                  ])
+    # Generate rotation matrix about x axis (roll)
+    Rx = np.array([[1, 0,             0           ],
+                   [0, np.cos(eul2), -np.sin(eul2)],
+                   [0, np.sin(eul2),  np.cos(eul2)]
+                  ])
+
+    # Combine individual rotations to one rotation matrix R
+    # R = Rz @ Ry @ Rx
+    r = Rotation.from_euler('xyz', [eul1, eul2, eul3])
+    R = r.as_matrix()
+    # Rotate vectors
+    rot_arr = R.dot(vel_arr.T).T
+
+    return rot_arr, R
+
 
 
 def rotate_zgrid(xg, yg, zg, angle_rad):
