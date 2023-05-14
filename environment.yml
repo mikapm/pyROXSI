@@ -23,6 +23,7 @@ dependencies:
   - cmocean
   - cmcrameri
   - motionless
+  - quaternion
   - salem
   - shapely
   - scikit-learn
