@@ -553,12 +553,13 @@ if not os.path.isfile(fn_fig) or args.overwrite_fig:
 
 # Plot w/ google satellite image following example from
 # https://salem.readthedocs.io/en/stable/auto_examples/plot_googlestatic.html
-fn_sat = os.path.join(args.out, 'Asilomar_2022_SSA_bathy_satellite.pdf')
+fn_sat = os.path.join(args.out, 'Asilomar_2022_SSA_bathy_satellite_only.png')
 if not os.path.isfile(fn_sat) or args.overwrite_fig:
     vmin = -8.0
     vmax = -3.5
-    fig, axes = plt.subplots(figsize=(15,6.25), ncols=2, 
-                             constrained_layout=True)
+    # fig, axes = plt.subplots(figsize=(15,6.25), ncols=2, 
+    #                          constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(12,12), constrained_layout=True)
 
     # Define background boundaries for plot (P)
     buffer = 140 # Buffer distance (m)
@@ -570,9 +571,10 @@ if not os.path.isfile(fn_sat) or args.overwrite_fig:
     # If you need to do a lot of maps you might want
     # to use an API key and set it here with key='YOUR_API_KEY'
     g = salem.GoogleVisibleMap(x=[lonMinP, lonMaxP], y=[latMinP, latMaxP],
-                            scale=2,  # scale is for more details
-                            maptype='satellite',
-                            key=api_key)  # try out also: 'terrain'
+                               scale=2,  # scale is for more details
+                               maptype='satellite',
+                               # key=api_key  # try out also: 'terrain'
+                               )
     # The google static image is a standard rgb image
     ggl_img = g.get_vardata()
     # ax1.imshow(ggl_img)
@@ -583,7 +585,7 @@ if not os.path.isfile(fn_sat) or args.overwrite_fig:
     sm.set_shapefile()  # add the glacier outlines
     sm.set_rgb(ggl_img)  # add the background rgb image
     sm.set_scale_bar(location=(0.88, 0.94))  # add scale
-    sm.visualize(ax=axes[0])  # plot it
+    sm.visualize(ax=ax)  # plot it
 
     # Define UTM WGS84 projection for SSA grid
     proj_utm = Proj(proj='utm', zone=utm_zone, ellps='WGS84', 
@@ -600,7 +602,7 @@ if not os.path.isfile(fn_sat) or args.overwrite_fig:
     # Transform SSA grid coordinates to google map projection
     # xx, yy = sm.grid.transform(xG, yG, crs=p)
     xx, yy = sm.grid.transform(Xsu, Ysu, crs=proj_utm)
-    axes[0].contourf(xx, yy, Zsu, cmap=cmocean.cm.deep_r, 
+    ax.contourf(xx, yy, Zsu, cmap=cmocean.cm.deep_r, 
                      vmin=vmin, vmax=vmax)
     # Mark large-scale array mooring locations
     for row in df_lsa.iterrows():
@@ -612,37 +614,37 @@ if not os.path.isfile(fn_sat) or args.overwrite_fig:
             xp, yp = proj_utm(lon, lat)
             # Convert UTM coordinates to google image projection
             xp, yp = sm.grid.transform(xp, yp, crs=proj_utm)
-            axes[0].scatter(xp, yp, marker='+', color='r', s=50)
+            ax.scatter(xp, yp, marker='+', color='r', s=50)
 
-    # On second axis, plot closeup of SSA grid with mooring locations marked
+    # # On second axis, plot closeup of SSA grid with mooring locations marked
+    # # axes[1].contourf(dsb.eastings, dsb.northings, dsb.z_utm, 
+    # #                  vmin=-7, vmax=-4.5, cmap=cmocean.cm.deep)
+    # dl = salem.DataLevels(dsb.z_llc, extend='both', cmap=cmocean.cm.deep_r,                      
+    #                 levels=np.linspace(vmin, vmax, 10), )
+    # # axes[1].contourf(lons, lats, dsb.z_llc, 
+    # #                  vmin=vmin, vmax=vmax, cmap=cmocean.cm.deep_r)
     # axes[1].contourf(dsb.eastings, dsb.northings, dsb.z_utm, 
-    #                  vmin=-7, vmax=-4.5, cmap=cmocean.cm.deep)
-    dl = salem.DataLevels(dsb.z_llc, extend='both', cmap=cmocean.cm.deep_r,                      
-                    levels=np.linspace(vmin, vmax, 10), )
-    # axes[1].contourf(lons, lats, dsb.z_llc, 
-    #                  vmin=vmin, vmax=vmax, cmap=cmocean.cm.deep_r)
-    axes[1].contourf(dsb.eastings, dsb.northings, dsb.z_utm, 
-                    vmin=vmin, vmax=vmax, cmap=cmocean.cm.deep_r)
-    dl.append_colorbar(axes[1], label='Depth [m]')
-    # SSA Mooring locations
-    axes[1].scatter(dsb.C1_utm[0].item(), dsb.C1_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.C2_utm[0].item(), dsb.C2_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.C3_utm[0].item(), dsb.C3_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.C4_utm[0].item(), dsb.C4_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.C5_utm[0].item(), dsb.C5_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.C6_utm[0].item(), dsb.C6_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.L1_utm[0].item(), dsb.L1_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.L2_utm[0].item(), dsb.L2_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.L4_utm[0].item(), dsb.L4_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.L5_utm[0].item(), dsb.L5_utm[1].item(), marker='+', color='r', s=60)
-    axes[1].scatter(dsb.C2L2_utm[0].item(), dsb.C2L2_utm[1].item(), marker='^', color='k', s=50)
-    axes[1].scatter(dsb.C2L4_utm[0].item(), dsb.C2L4_utm[1].item(), marker='^', color='k', s=50)
-    axes[1].scatter(dsb.C4L2_utm[0].item(), dsb.C4L2_utm[1].item(), marker='^', color='k', s=50)
-    axes[1].scatter(dsb.C4L4_utm[0].item(), dsb.C4L4_utm[1].item(), marker='^', color='k', s=50)
+    #                 vmin=vmin, vmax=vmax, cmap=cmocean.cm.deep_r)
+    # dl.append_colorbar(axes[1], label='Depth [m]')
+    # # SSA Mooring locations
+    # axes[1].scatter(dsb.C1_utm[0].item(), dsb.C1_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.C2_utm[0].item(), dsb.C2_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.C3_utm[0].item(), dsb.C3_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.C4_utm[0].item(), dsb.C4_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.C5_utm[0].item(), dsb.C5_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.C6_utm[0].item(), dsb.C6_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.L1_utm[0].item(), dsb.L1_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.L2_utm[0].item(), dsb.L2_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.L4_utm[0].item(), dsb.L4_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.L5_utm[0].item(), dsb.L5_utm[1].item(), marker='+', color='r', s=60)
+    # axes[1].scatter(dsb.C2L2_utm[0].item(), dsb.C2L2_utm[1].item(), marker='^', color='k', s=50)
+    # axes[1].scatter(dsb.C2L4_utm[0].item(), dsb.C2L4_utm[1].item(), marker='^', color='k', s=50)
+    # axes[1].scatter(dsb.C4L2_utm[0].item(), dsb.C4L2_utm[1].item(), marker='^', color='k', s=50)
+    # axes[1].scatter(dsb.C4L4_utm[0].item(), dsb.C4L4_utm[1].item(), marker='^', color='k', s=50)
 
-    axes[1].grid(alpha=0.5)
-    axes[1].set_ylabel('Northings [m]')
-    axes[1].set_xlabel('Eastings [m]')
+    # axes[1].grid(alpha=0.5)
+    # axes[1].set_ylabel('Northings [m]')
+    # axes[1].set_xlabel('Eastings [m]')
 
     # Show/save plot
     # plt.tight_layout()

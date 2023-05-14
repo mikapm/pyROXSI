@@ -245,7 +245,7 @@ class ADCP():
         Returns:
             zic - depth below the surface of the contaminated region
         """
-        zic = ha * (1 - np.cos(self.beam_ang)) + 3 * self.binsz / 2
+        zic = ha * (1 - np.cos(np.deg2rad(self.beam_ang))) + 3 * self.binsz / 2
         return zic
 
 

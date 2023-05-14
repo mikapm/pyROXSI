@@ -6,6 +6,82 @@ import numbers
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+def fit_ellipse_svd(x, y, ax=None, plot_ellipse=False, plot_semiaxes=True,
+    **kwargs):
+    """
+    Fit an ellipse to arrays x and y using singular value decomposition (SVD).
+
+    Borrowed from
+    http://notmatthancock.github.io/2016/02/03/ellipse-princpal-axes.html
+
+    Parameters:
+        x - 1D array; x-axis values (same length as y)
+        y - 1D array; y-axis values (same length as x)
+        ax - matplotlib axes object; if not None, plots ellipse and
+             semi axes on ax
+        plot_ellipse - bool; if True, plots ellipse on ax
+        plot_semiaxes - bool; if True, plots semi-axes on ax
+        ** kwargs for ax.plot()
+
+    Returns:
+        ellipse - array for fitted ellipse
+        angle - rotation angle of ellipse (rad)
+        a - scalar; semi-major axis of ellipse
+        b - scalar; semi-minor axis of ellipse
+    """
+    # Means
+    xmean = np.nanmean(x)
+    ymean = np.nanmean(y)
+    # Number of points
+    N = len(x)
+    X = np.c_[x, y] # Concatenate x and y
+    t = np.linspace(0, 1, N, endpoint=False)
+    # Rotation matrix
+    rotation_matrix = lambda x: np.array([[np.cos(x), -np.sin(x)], [np.sin(x), np.cos(x)]])
+    # Fit the ellipse.
+    u, s, vt = np.linalg.svd((X-X.mean(axis=0))/np.sqrt(N), full_matrices=False)
+    # Semi axes
+    a = np.sqrt(2) * s[0]
+    b = np.sqrt(2) * s[1]
+    # Ellipse function
+    ellipse = np.sqrt(2) * np.c_[s[0]*np.cos(2*np.pi*t), s[1]*np.sin(2*np.pi*t)]
+    # Rotation angle of ellipse 
+    angle = np.arctan2(vt[0,1], vt[0,0])
+    # Check if angle is negative
+#     if angle < 0:
+#         # Convert to positive angle
+#         angle += 2 * np.pi
+    # Want angle in 1st or 4th quadrant
+    if abs(angle) >= np.pi/2:
+        if angle > 0:
+            angle -= np.pi
+        else:
+            angle += np.pi
+    # Rotate ellipse
+    ellipse = np.dot(rotation_matrix(angle), ellipse.T).T
+    # Add mean x and mean y (origin) to ellipse
+    ellipse[:,0] += xmean
+    ellipse[:,1] += ymean
+
+    # Plot if requested
+    if ax is not None:
+        ta = np.linspace(0, a) 
+        tb = np.linspace(0, b)
+        # Ellipse
+        if plot_ellipse:
+            ax.plot(ellipse[:,0], ellipse[:,1], **kwargs)
+        # Semi axes
+        if plot_semiaxes:
+            ax.plot(xmean + ta*np.cos(angle), ymean + ta*np.sin(angle), 
+                **kwargs)
+            ax.plot(xmean + tb*np.cos(angle+np.pi/2), 
+                    ymean + tb*np.sin(angle+np.pi/2), 
+                    **kwargs)
+    
+    return ellipse, angle, a, b
+
+
 def qqplot(x, y, quantiles=None, interpolation='nearest', ax=None, rug=False,
            rug_length=0.05, rug_kwargs=None, scatter=True, **kwargs):
     """

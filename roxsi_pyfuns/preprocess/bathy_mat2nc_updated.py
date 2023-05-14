@@ -57,7 +57,7 @@ args = parse_args(args=sys.argv[1:])
 api_key = os.environ["OPENAI_API_KEY"]
 
 # Read bathymetry .mat file
-fn_mat = os.path.join(args.dr, 'zmsl_Asilomar_gridded_1m.mat')
+fn_mat = os.path.join(args.dr, 'zmsl_Asilomar_gridded_50cm.mat')
 mat = loadmat(fn_mat)
 
 # Read large-scale array mooring locations table
@@ -107,7 +107,7 @@ ssa_moorings = {
 }
 
 # Save bathymetry to netcdf
-fn_nc = os.path.join(args.out, 'Asilomar_2022_SSA_bathy_updated_1m.nc')
+fn_nc = os.path.join(args.out, 'Asilomar_2022_SSA_bathy_updated_50cm.nc')
 if not os.path.isfile(fn_nc) or args.overwrite_nc:
     # Define variables dict
     data_vars = {} # Empty for now
@@ -238,9 +238,10 @@ else:
     dsb = xr.decode_cf(xr.open_dataset(fn_nc, decode_coords='all'))
 
 
+fn_fig = os.path.join(args.out, 'Asilomar_2022_SSA_bathy_updated.png')
 # Plot bathymetry and mooring locations
-fig, ax = plt.subplots(figsize=(6,6))
-dsb.z_msl.plot.pcolormesh(x='x', y='y', ax=ax, vmin=-10, vmax=0)
+fig, ax = plt.subplots(figsize=(10,8))
+dsb.z_msl.plot.contourf(x='x', y='y', ax=ax, vmin=-8, vmax=-4)
 # dsb.z_msl.plot.pcolormesh(x='lon', y='lat', ax=ax, vmin=-8, vmax=0)
 # Iterate over mooring IDs and mark their location
 for k in dsb.keys():
@@ -248,21 +249,65 @@ for k in dsb.keys():
         continue
     # Plot location of current mooring
     if k[0] == 'X':
-        # LAS moorings, use black color
-        ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
-                   marker='^', color='k')
+#         # LAS moorings, use black color
+#         ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+#                    marker='*', color='gold', s=100)
+#         ax.text(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+#                 s=k, color='gold', fontsize=18)
         pass
     else:
         pass
-        # SSA moorings in red
-        ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
-                   marker='+', color='r')
         # Mooring IDs
-        ax.text(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
-                s=k, color='k')
+        if k in ['C1', 'C6']:
+            ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    marker='o', color='r', s=80)
+            ax.text(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    s=k, color='r', fontsize=18)
+        elif k in ['C2', 'C4']:
+            ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    marker='^', color='b', s=80)
+            ax.text(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    s=k, color='b', fontsize=18)
+        elif k == 'C3':
+            ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    marker='s', color='purple', s=80)
+            ax.text(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    s=k, color='purple', fontsize=18)
+        else:
+            ax.scatter(x=dsb[k].attrs['x_loc'], y=dsb[k].attrs['y_loc'], 
+                    marker='+', color='k', s=50)
 
+ax.axis('equal')
+ax.set_xlim([-305, -280])
+ax.set_ylim([-20, 20])
+
+# Save/show figure
 plt.tight_layout()
-plt.show()
+if not os.path.isfile(fn_fig):
+    plt.savefig(fn_fig, bbox_inches='tight', dpi=300)
+# else:
+#     plt.show()
+plt.close()
 
 
+# Plot zoomed-out bathymetry
+fn_fig_largescale = os.path.join(args.out, 'Asilomar_2022_large_bathy_updated.pdf')
+fig, ax = plt.subplots(figsize=(10,8))
+dsb.z_msl.plot.pcolormesh(x='x', y='y', ax=ax, vmin=-10, vmax=-2)
+# Marker at C3
+# ax.scatter(x=dsb['C3'].attrs['x_loc'], y=dsb['C3'].attrs['y_loc'], 
+#         marker='*', color='gold', s=100)
+# ax.text(x=dsb['C3'].attrs['x_loc'], y=dsb['C3'].attrs['y_loc'], 
+#         s='C3', color='gold', fontsize=18)
 
+ax.axis('equal')
+ax.set_xlim([-405, -180])
+ax.set_ylim([-80, 80])
+
+# Save/show figure
+plt.tight_layout()
+if not os.path.isfile(fn_fig_largescale):
+    plt.savefig(fn_fig_largescale, bbox_inches='tight', dpi=300)
+# else:
+#     plt.show()
+plt.close()
