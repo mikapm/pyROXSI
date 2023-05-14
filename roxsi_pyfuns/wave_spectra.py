@@ -6,8 +6,6 @@ import numpy as np
 import xarray as xr
 from scipy.signal import detrend, windows
 from scipy import optimize
-from roxsi_pyfuns import transfer_functions as rptf
-from roxsi_pyfuns import coordinate_transforms as rpct
 
 
 def waveno_deep(omega):
@@ -68,6 +66,25 @@ def waveno_full(omega, d, k0=None, **kwargs):
     k = optimize.newton(f, k0, args=(omega, d), **kwargs)
 
     return k
+
+def dirs_nautical(dtheta=2, recip=False):
+    """
+    Make directional array in Nautical convention (compass dir from).
+    """
+    # Convert directions to nautical convention (compass dir FROM)
+    # Start with cartesian (a1 is positive east velocities, b1 is positive north)
+    theta = -np.arange(-180, 179, dtheta)  
+    # Rotate, flip and sort
+    theta += 90
+    theta[theta < 0] += 360
+    if recip:
+        westdirs = (theta > 180)
+        eastdirs = (theta < 180)
+        # Take reciprocals such that wave direction is FROM, not TOWARDS
+        theta[westdirs] -= 180
+        theta[eastdirs] += 180
+
+    return theta
 
 
 def k_rms(h0, f, P, B, two_sided=True):
@@ -323,7 +340,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
     # Define dictionary to store U,V,Z fft windows, if applicable
     if ndim == 3:
         order = ['z', 'u', 'v'] # Order of components
-        direction = rpct.dirs_nautical(dtheta=dth)
+        direction = dirs_nautical(dtheta=dth)
         n_dirs = len(direction)
         # Output ds spectral variables
         data_vars={'Ezz': (['freq'], np.zeros(n_freqs)),
@@ -500,7 +517,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # **OR** shallow water:
         # robust to partial standing waves, but assumes shore normal propagation
         if depth is not None:
-            k = rptf.waveno_full(omega=2*np.pi*f, d=depth) # linear wavenumbers 
+            k = waveno_full(omega=2*np.pi*f, d=depth) # linear wavenumbers 
             # Compute group velocity per frequency/wavenumber
             Cg = 0.5 * (2*np.pi*f) * k * (1 + (2*k*depth) / np.sinh(2*k*depth))
             g = 9.81 # gravity (m s^-2)
@@ -691,7 +708,7 @@ def MEM_directionalestimator(E, F, a1, a2, b1, b2, convert=False,
         ND = Dn.copy()
 
     # Convert directions to nautical convention (compass dir FROM)
-    theta = rpct.dirs_nautical(dtheta=dtheta, recip=False)  
+    theta = dirs_nautical(dtheta=dtheta, recip=False)  
 
     # Sort spectrum according to new directions
     dsort = np.argsort(theta)
@@ -779,7 +796,7 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
     if fp is None:
         dss = spec_uvz(x, fs=fs)
         fp = 1 / dss.Tp_Y95.item() # Peak frequency following Young (1995)
-    kp = rptf.waveno_full(2*np.pi*fp, d=h0).item()
+    kp = waveno_full(2*np.pi*fp, d=h0).item()
     mu = (kp * h0)**2
     mu_info = 'Shallowness parameter'
     eps = 2 * np.nanstd(x) / h0
