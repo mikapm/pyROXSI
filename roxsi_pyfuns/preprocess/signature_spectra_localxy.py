@@ -165,10 +165,12 @@ if not os.path.isfile(fn_out):
             if noast:
                 # No AST signal -> use eta_lin_krms
                 dss = adcp.wavespec(seg, u='vCS', v='vLS', z='eta_lin_krms',
-                                    fmin=0.05, fmax=1.0, seglen=seglen)
+                                    fmin=0.05, fmax=1.0, seglen=seglen,
+                                    depth=depth_loc)
             else:
                 dss = adcp.wavespec(seg, u='vCS', v='vLS', z='ASTd',
-                                    fmin=0.05, fmax=1.0, seglen=seglen)
+                                    fmin=0.05, fmax=1.0, seglen=seglen,
+                                    depth=depth_loc)
             # Convert time array to numerical format
             time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
             time = pd.to_datetime(dss.time.values).to_pydatetime()
@@ -382,8 +384,14 @@ if not os.path.isfile(fn_out):
             dss.nu_LH57.attrs['units'] = 'dimensionless' 
             dss.nu_LH57.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density_bandwidth'
             dss.nu_LH57.attrs['long_name'] = 'spectral bandwidth following Longuet-Higgins (1957)'
+            dss.k_lin.attrs['units'] = 'rad/m' 
+            dss.k_lin.attrs['standard_name'] = 'wavenumber'
+            dss.k_lin.attrs['long_name'] = 'Wavenumbers from linear dispersion relation'
+            dss.Cg.attrs['units'] = 'm/s' 
+            dss.Cg.attrs['standard_name'] = 'group_speed'
+            dss.Cg.attrs['long_name'] = 'Group speed from linear dispersion relation'
 
-        # Global attributes
+            # Global attributes
             dss.attrs['title'] = ('ROXSI 2022 Asilomar Small-Scale Array ' + 
                                 'Signature1000 {} wave spectra'.format(mid))
             dss.attrs['summary'] =  ('Nearshore wave spectra from ADCP measurements. '+
