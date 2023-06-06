@@ -301,6 +301,7 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # Remove fillvalues
         z = z[z!=fillvalue]
 
+    g = 9.81 # gravity (m s^-2)
     npts = len(z) # Number of data points
     # Combine z, u, v into common array such that
     # z=arr[0], u=arr[1], v=arr[2]
@@ -421,6 +422,12 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
     # Get index of spectral peak
     fpind = np.where(ds['Ezz']==ds['Ezz'].max())
 
+    if depth is not None:
+        # Compute linear wavenumbers and group speed
+        k = waveno_full(omega=2*np.pi*f, d=depth) # linear wavenumbers 
+        # Compute group velocity per frequency/wavenumber
+        Cg = 0.5 * (2*np.pi*f) * k * (1 + (2*k*depth) / np.sinh(2*k*depth))
+
     # If input array is 3D, calculate cross spectra
     if ndim == 3:
         uv_win = fft_dict['u'] * np.conj(fft_dict['v']) # UV window
@@ -517,10 +524,6 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
         # **OR** shallow water:
         # robust to partial standing waves, but assumes shore normal propagation
         if depth is not None:
-            k = waveno_full(omega=2*np.pi*f, d=depth) # linear wavenumbers 
-            # Compute group velocity per frequency/wavenumber
-            Cg = 0.5 * (2*np.pi*f) * k * (1 + (2*k*depth) / np.sinh(2*k*depth))
-            g = 9.81 # gravity (m s^-2)
             # Cg = np.sqrt(g * depth) # shallow water version, see Sheremet et al, 2002
             # energy flux (by freq) in cartesian coordinates (assumes X propagation 
             # dominates... valid near beach)
@@ -550,6 +553,11 @@ def spec_uvz(z, u=None, v=None, wsec=256, fs=5.0, dth=2, fmerge=3,
     ds['Tp_Y95'] = ([], (1 / fpy))
     # Spectral bandwidth following Longuet-Higgins (1957)
     ds['nu_LH57'] = ([], spec_bandwidth(E, f))
+    # Group speed and linear wavenumber
+    if depth is not None:
+        ds['Cg'] = (['freq'], Cg)
+        ds['k_lin'] = (['freq'], k)
+    # Directional params
     if ndim == 3:
         # Energy directions per frequency
         ds['dirs_freq'] = (['freq'], dirs)
