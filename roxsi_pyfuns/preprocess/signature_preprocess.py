@@ -1287,7 +1287,7 @@ class ADCP():
 
         
     def wavespec(self, ds, u='vEhpr', v='vNhpr', z='ASTd', seglen=1200, 
-                 fmin=0.05, fmax=0.33):
+                 fmin=0.05, fmax=0.33, depth=None):
         """
         Estimate wave spectra from ADCP data in the input dataset ds.
         Uses the despiked N&E velocities and AST surface elevation
@@ -1306,6 +1306,7 @@ class ADCP():
             seglen - scalar; spectral segment length in seconds 
             fmin - scalar; min. frequency for computing bulk params
             fmax - scalar; max. frequency for computing bulk params
+            depth - scalar; segment depth (optional)
 
         Returns:
             dss_concat - combined dataset of spectral segments
@@ -1350,7 +1351,7 @@ class ADCP():
                 # Use non-despiked segment if this one has NaNs
                 vEd = ds_seg['vE'].interpolate_na(dim='time',
                     fill_value="extrapolate").sel(range=z_opt, 
-                                                method='nearest').values
+                                                  method='nearest').values
                 vEd = pd.Series(vEd, index=seg.index)
             vNd = ds_seg[v].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
@@ -1369,6 +1370,7 @@ class ADCP():
                                 fs=self.fs,
                                 fmin=fmin,
                                 fmax=fmax,
+                                depth=depth,
                                 )
             # Add time as coordinate
             dss = dss.assign_coords(time=[pd.Timestamp(t0ss).round('20T')])
