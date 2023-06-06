@@ -92,7 +92,26 @@ if not os.path.isfile(fn_out):
     t0 = pd.Timestamp('2022-06-23') # Start (earliest) date
     t1 = pd.Timestamp('2022-07-22') # End (latest) date
     date_range = pd.date_range(t0, t1, freq='1D')
+    # First iterate over all dates and compute mean AST distance
+    ast_means = [] # Store daily AST means
+    print('Estimating local MSL from AST ...')
+    for date in date_range[3:-9]:
+        print('date: ', date)
+        # Read daily Sig netcdf file
+        fn = os.path.join(sigdir, 'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
+            mid, pd.Timestamp.strftime(date, '%Y%m%d')))
+        if os.path.isfile(fn):
+            ds = xr.open_dataset(fn, decode_coords='all')
+        else:
+            # No dataset for current date -> skip
+            continue
+        ast_mean = ds.ASTd.mean(skipna=True).item()
+        # Append to list
+        ast_means.append(ast_mean)
+    # Average all daily mean AST values for mean depth
+    msl_ast = np.nanmean(ast_means)
     # Iterate over dates
+    print('Estimating spectra ...')
     for date in date_range:
         print('date: ', date)
         # Read daily Sig netcdf file
@@ -132,8 +151,10 @@ if not os.path.isfile(fn_out):
                 noast = False # Flag
                 # Depth of mooring
                 depth_adcp = ast.mean().item() # hourly mean depth of ADCP
-            depth_loc = depth_adcp + adcp.zp # Local water depth to bottom
-            msl_dev = depth_loc + z_msl # Deviation from MSL
+            depth_loc = depth_adcp # Local water depth to bottom
+            msl_dev = depth_loc - np.abs(z_msl) # Deviation from MSL
+            # Deviation from mean AST
+            msl_dev_ast = depth_loc - np.abs(msl_ast) # Deviation from MSL from AST
             # Surrounding depth based on L5
             depth_surr = -z_msl_surr + msl_dev
 
@@ -199,6 +220,10 @@ if not os.path.isfile(fn_out):
             dss.msl_dev.attrs['standard_name'] = 'sea_surface_height_above_sea_level'
             dss.msl_dev.attrs['long_name'] = 'Mean water level above NAVD 88 datum'
             dss.msl_dev.attrs['units'] = 'm'
+            dss['msl_dev_ast'] = (['time'], [msl_dev_ast])
+            dss.msl_dev_ast.attrs['standard_name'] = 'sea_surface_height_above_sea_level'
+            dss.msl_dev_ast.attrs['long_name'] = 'Mean experiment water level from AST'
+            dss.msl_dev_ast.attrs['units'] = 'm'
             dss['z_msl'] = (['time'], [z_msl])
             dss.z_msl.attrs['standard_name'] = 'sea_floor_depth_below_mean_sea_level'
             dss.z_msl.attrs['long_name'] = 'Mooring depth relative to NAVD 88 datum'
