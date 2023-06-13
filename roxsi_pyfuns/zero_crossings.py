@@ -2,6 +2,7 @@
 Functions for wave-by-wave analysis by zero crossings.
 """
 import numpy as np
+import pandas as pd
 
 def crossings_nonzero_pos2neg(data):
     """
@@ -139,6 +140,7 @@ def get_waveheights(ts, method='down', zero_crossings=None, func=None, minlen=0)
 
         return zero_crossings_final, Hw, Hc, Ht
 
+
 def exceedance_prob(x):
     """
     Returns exceedance probabilities y for input array x. Also 
@@ -156,3 +158,30 @@ def exceedance_prob(x):
     std = 1 / (n+1) * np.sqrt((j * (n - j + 1)) / (n + 2))
 
     return y, std
+
+
+def interpolate_phase(z, N, label=None):
+    """
+    Interpolate array z to 0-2*pi phase axis of length N.
+
+    Parameters:
+        z - data array to interpolate
+        N - scalar; length of interpolation target phase axis
+        label - str; if not None, labels variable of output df
+
+    Returns pd.DataFrame with intepolated signal and target
+    phase axis as index.
+    """
+    # Define target phase (x) axis to interpolate to
+    x_phase = np.linspace(0, 2*np.pi, N)
+    # Define true phase x axis of wave
+    x_wave = np.linspace(0, 1, len(z)) * 2*np.pi
+    # Interpolate input array to regular phase
+    z_interp = np.interp(x_phase, x_wave, z)
+    # Save interpolated signal to output dataframe
+    if label is not None:
+        dfi = pd.DataFrame(data={label: z_interp}, index=x_phase)
+    else:
+        dfi = pd.DataFrame(data=z_interp, index=x_phase)
+
+    return dfi
