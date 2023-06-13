@@ -90,6 +90,7 @@ def dissipation_rate(k, spec):
     Returns:
         epsilon - dissipation rate from (1)
         r_squared - R^2 of k^{-5-3} fit to spectrum
+        coeff - fit coefficient
     """
     # Define fit function
     def fun(x, c):
@@ -99,10 +100,11 @@ def dissipation_rate(k, spec):
         return c * x ** (-5/3)
     # Fit k^-5/3 curve function
     popt, pcov = curve_fit(fun, k, spec)
+    coeff = popt[0] # Fit coeff.
     # Compute R^2 of fit
     r_squared = rps.r_squared(spec, fun(k, *popt))
     # Compute dissipation rate epsilon following (1)
     C = 1.5
-    epsilon = (popt[0] / (24/55*C))**(3/2)
+    epsilon = (coeff / (24/55*C))**(3/2)
 
-    return epsilon, r_squared
+    return epsilon, r_squared, coeff
