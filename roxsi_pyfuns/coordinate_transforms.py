@@ -5,10 +5,11 @@ Functions to perform various coordinate transforms.
 import numpy as np
 from sklearn.decomposition import PCA
 from scipy.spatial.transform import Rotation   
+from roxsi_pyfuns import wave_spectra as rpws
 
 
 def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, 
-               flipx=False, flipy=False, flipz=False):
+               flipx=False, flipy=False, flipz=False, heading_exp=None):
     """
     Rotate x,y or x,y,z components according to their principal axes
     using principal component analysis (PCA).
@@ -22,6 +23,7 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
         flipx - bool; if True, flips (*-1) first column in R
         flipy - bool; if True, flips (*-1) second column in R
         flipz - bool; if True, flips (*-1) third column in R
+        heading_exp - scalar; expected heading angle
 
     Returns:
         rot_arr - shape (N,2) or (N,3) array; rotated vectors such that:
@@ -97,6 +99,75 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
     # Return all 3?
     elif return_r and return_eul:
         return rot_arr, R, eul
+
+def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False):
+    """
+    Use PCA rotation to convert from instrument coordinates to
+    local cross-shore (PC1), along-shore (PC2) and vertical (PC3)
+    velocities.
+
+    Performs various checks based on PCA rotation angles; designed
+    to work with ROXSI 2022 Asilomar Vector ADV velocities.
+
+    Parameters:
+        ux - shape N array; x-component of e.g. velocity
+        uy - shape N array; y-component of e.g. velocity
+        uz - shape N array; z-component of e.g. velocity
+        heading_exp - scalar; expected heading angle in deg
+        print_msg - bool; prints messages if True
+    """
+    # First rotate velocities based on principal axes
+    vel_pca, R, eul = rotate_pca(ux=ux, uy=uy, uz=uz, return_r=True, 
+                                 return_eul=True, )
+    # Check if R is left-handed (det(R)=-1) 
+    if np.linalg.det(R) < 0 and heading_exp is not None: 
+        # Check if heading is off relative to expected heading
+        if np.abs(heading_exp - np.rad2deg(eul['eul3'])) > 45:
+            if print_msg:
+                print('Flipping y axis ...')
+            # Redo rotation, but flip y axis
+            vel_pca, R, eul = rotate_pca(ux=ux, uy=uy, uz=uz, return_r=True, 
+                                         return_eul=True, flipy=True, ) 
+    # Assume u_pc1=ucs, u_pc2=uls, u_pc3=uw
+    ucs = vel_pca[:,0].copy()
+    uls = vel_pca[:,1].copy()
+    uw = vel_pca[:,2].copy()
+    # Check if some component(s) need to be flipped
+    if np.abs(np.rad2deg(eul['eul1'])) > 90:
+        # z-axis points downward -> flip vertical velocity
+        if print_msg:
+            print('Flipping vertical velocity ... ')
+        uw *= (-1)
+    if np.abs(np.rad2deg(eul['eul2'])) > 90:
+        # z-axis points downward -> flip vertical velocity
+        if print_msg:
+            print('Flipping vertical velocity ... ')
+        uw *= (-1)
+    # Check if heading is off if det(R) = 1
+    if np.linalg.det(R) > 0 and heading_exp is not None:
+        if np.abs(heading_exp - np.rad2deg(eul['eul3'])) > 90:
+            if print_msg:
+                print('Flipping horizontal velocity ... ')
+            ucs *= (-1)
+    # Compute coherence and phase to check components
+    spec_r = rpws.spec_uvz(z=uw, u=ucs, v=uls, fs=16)
+    # Get index of max. coherence^2 b/w ucs and uw
+    ind_mcu = np.argmax((spec_r.coh_uz**2).sel(freq=slice(0.05, 0.3)).values).item()
+    ind_mcv = np.argmax((spec_r.coh_vz**2).sel(freq=slice(0.05, 0.3)).values).item()
+    # Compute ucs-uw phase at max coherence
+    pmc = np.rad2deg(spec_r.ph_uz.sel(freq=slice(0.05, 0.3)).isel(freq=ind_mcu).item())
+    # If phase is +90 -> flip ux velocity
+    if pmc > 0:
+        ucs *= (-1)
+        # Compute coherence and phase again
+        spec_r = rpws.spec_uvz(z=uw, u=ucs, v=uls, fs=16)
+        pmc = np.rad2deg(spec_r.ph_uz.sel(freq=slice(0.05, 0.3)).isel(freq=ind_mcu).item())
+    # Print ucs-uw phase at max coherence
+    if print_msg:
+        print('ucs-uw phase at max coh: {:.2f}'.format(pmc))
+
+    return ucs, uls, uw
+
 
 def rotate_euler(ux, uy, uz, eul1, eul2, eul3):
     """
