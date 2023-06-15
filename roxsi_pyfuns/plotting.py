@@ -167,6 +167,22 @@ def qqplot(x, y, quantiles=None, interpolation='nearest', ax=None, rug=False,
         ax.plot(x_quantiles, y_quantiles, **kwargs)
 
 
+def box_plot(ax, data, positions, edge_color, fill_color=None):
+    """
+    Function to set edgecolors of box plot, borrowed from Martin Evans:
+    https://stackoverflow.com/questions/41997493/python-matplotlib-boxplot-color
+    """
+    bp = ax.boxplot(x=data, positions=positions, patch_artist=True)
+    
+    for element in ['boxes', 'whiskers', 'fliers', 'means', 'medians', 'caps']:
+        plt.setp(bp[element], color=edge_color)
+
+    if fill_color is not None:
+        for patch in bp['boxes']:
+            patch.set(facecolor=fill_color)       
+        
+    return bp
+
 
 def multiple_formatter(denominator=2, number=np.pi, latex='\pi'):
     """
