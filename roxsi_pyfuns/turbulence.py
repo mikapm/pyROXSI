@@ -77,7 +77,7 @@ def k_spec_wavephase(w, U, fs=16, k_int=None):
     return dfs
 
 
-def dissipation_rate(k, spec):
+def dissipation_rate(k, spec, fit='curve'):
     """
     Estimate turbulence dissipation rate from wavenumber spectrum.
     Fits k^{-5/3} curve to given spectrum and computes dissipation
@@ -86,6 +86,12 @@ def dissipation_rate(k, spec):
         epsilon = (Cf / (24/55*C))**(3/2), (1)
     
     where Cf is the intertial subrange fit coefficient and C=1.5.
+
+    Parameters:
+        k - array; wavenumbers for spectrum
+        spec - array; wavenumber spectrum
+        fit - str; either 'curve' or 'linear'. If 'linear' fits
+              linear function to log transform of data.
     
     Returns:
         epsilon - dissipation rate from (1)
@@ -98,11 +104,25 @@ def dissipation_rate(k, spec):
         Standard curve fit to inertial subrange k^{-5/3}.
         """
         return c * x ** (-5/3)
-    # Fit k^-5/3 curve function
-    popt, pcov = curve_fit(fun, k, spec)
-    coeff = popt[0] # Fit coeff.
-    # Compute R^2 of fit
-    r_squared = rps.r_squared(spec, fun(k, *popt))
+    def funl(x, c):
+        """
+        Linear fit to inertial subrange with log transform.
+        """
+        return np.log(c) + (-5/3) * np.log(x)
+    # Standard curve fit
+    if fit == 'curve':
+        # Fit k^-5/3 curve function
+        popt, pcov = curve_fit(fun, k, spec, p0=1e-4)
+        coeff = popt[0] # Fit coeff.
+        # Compute R^2 of fit
+        r_squared = rps.r_squared(spec, fun(k, coeff))
+    # Linear fit to log transform of data
+    elif fit == 'linear':
+        # Fit k^-5/3 linear function in log space
+        popt, pcov = curve_fit(funl, k, np.log(spec), p0=1e-4)
+        coeff = popt[0] # Fit coeff.
+        # Compute R^2 of fit (to log-transforms)
+        r_squared = rps.r_squared(np.log(spec), np.log(fun(k, coeff)))
     # Compute dissipation rate epsilon following (1)
     C = 1.5
     epsilon = (coeff / (24/55*C))**(3/2)
