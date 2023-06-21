@@ -70,6 +70,7 @@ def k_spec_wavephase(w, U, fs=16, k_int=None):
     var_f = np.sum(ps_win) * df # f-spec variance
     var_k = np.sum(ps_k) * dk # k-spec variance
     assert np.isclose(var_f, var_k)
+    # Interpolate to given wavenumber range?
     if k_int is not None:
         # Interpolate spectrum to specified frequency range for averaging
         # but don't extrapolate beyond k_int range (left, right)
