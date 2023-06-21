@@ -64,6 +64,12 @@ def k_spec_wavephase(w, U, fs=16, k_int=None):
     # (Taylor's hypothesis)
     k = (2*np.pi * f) / U # Wavenumber array
     ps_k = ps_win / (2*np.pi / U) # Wavenumber spectrum
+    # Check that the variance is conserved
+    df = f[2] - f[1]
+    dk = k[2] - k[1]
+    var_f = np.sum(ps_win) * df # f-spec variance
+    var_k = np.sum(ps_k) * dk # k-spec variance
+    assert np.isclose(var_f, var_k)
     if k_int is not None:
         # Interpolate spectrum to specified frequency range for averaging
         # but don't extrapolate beyond k_int range (left, right)
