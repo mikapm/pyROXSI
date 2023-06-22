@@ -4,6 +4,7 @@ Functions to compute turbulence parameters.
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from scipy.optimize import curve_fit
 from scipy.signal import detrend
 from roxsi_pyfuns import stats as rps
@@ -75,13 +76,25 @@ def k_spec_wavephase(w, U, fs=16, k_int=None):
         # Interpolate spectrum to specified frequency range for averaging
         # but don't extrapolate beyond k_int range (left, right)
         ps_i = np.interp(k_int, k, ps_k, left=np.nan, right=np.nan)
-        # Save k-spectrum to dataframe
-        dfs = pd.DataFrame(data=ps_i, index=k_int)
+        # Save k-spectrum to xr.Dataset
+        # dfs = pd.DataFrame(data=ps_i, index=k_int)
+        data_vars = {'k_spec':(['k'], ps_i,),
+                     'U': ([], U),
+                     }
+        # define coordinates
+        coords = {'k': (['k'], k_int)}
     else:
         # Don't interpolate spectrum
-        dfs = pd.DataFrame(data=ps_k, index=k)
+        # dfs = pd.DataFrame(data=ps_k, index=k)
+        data_vars = {'k_spec':(['k'], ps_k,),
+                     'U': ([], U),
+                     }
+        # define coordinates
+        coords = {'k': (['k'], k)}
+    # Create output dataset
+    dss = xr.Dataset(data_vars=data_vars, coords=coords,)
 
-    return dfs
+    return dss
 
 
 def dissipation_rate(k, spec, fit='curve'):
@@ -105,7 +118,7 @@ def dissipation_rate(k, spec, fit='curve'):
         r_squared - R^2 of k^{-5-3} fit to spectrum
         coeff - fit coefficient
     """
-    # Define fit function
+    # Define fit functions
     def fun(x, c):
         """
         Standard curve fit to inertial subrange k^{-5/3}.
@@ -135,3 +148,45 @@ def dissipation_rate(k, spec, fit='curve'):
     epsilon = (coeff / (24/55*C))**(3/2)
 
     return epsilon, r_squared, coeff
+
+def dissipation_rate_LT83(f, spec, fit='curve'):
+    """
+    Estimate turbulence dissipation rate from frequency
+    spectrum following Lumley and Terray (1983, JPO).
+    This implementation follows the approach outlined by
+    Trowbridge and Elgar (2001, JPO), and is based on the Matlab
+    code calc_stats_iso3.m by Johanna Rosman.
+
+    The model of the spectrum is (T&E01, Eq. (7)):
+
+    P_ww = 24/55 * C * eps**(2/3) * U**(2/3) * omega**(-5/3) * I,
+
+    where the T&E01 equation has a typo (?) in the first fraction 
+    (12/55), C=1.5 and I accounts for the effects of the surface waves 
+    (Eq. (A13)).
+
+    Parameters:
+        f - array; frequency array for spectrum
+        spec - array; frequency spectrum
+        fit - str; either 'curve' or 'linear'. If 'linear' fits
+              linear function to log transform of data.
+    
+    Returns:
+        epsilon - dissipation rate from (1)
+        r_squared - R^2 of k^{-5-3} fit to spectrum
+        coeff - fit coefficient
+    """
+    # Define fit functions
+    def fun(x, c):
+        """
+        Standard curve fit to inertial subrange k^{-5/3}.
+        """
+        return c * x ** (-5/3)
+    def funl(x, c):
+        """
+        Linear fit to inertial subrange with log transform.
+        """
+        return np.log(c) + (-5/3) * np.log(x)
+
+    
+
