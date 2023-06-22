@@ -34,8 +34,8 @@ def k_spec_wavephase(w, U, fs=16, k_int=None):
                 spectrum to (optional)
 
     Returns:
-        dfs -  pd.DataFrame with spectrum as data and (interpolated) 
-               wavenumbers as index.
+        dss -  xr.Dataset with spectrum as data and (interpolated) 
+               wavenumbers as coordinates.
     """
     # Copy input timeseries
     wseg = w.copy()
@@ -76,20 +76,18 @@ def k_spec_wavephase(w, U, fs=16, k_int=None):
         # Interpolate spectrum to specified frequency range for averaging
         # but don't extrapolate beyond k_int range (left, right)
         ps_i = np.interp(k_int, k, ps_k, left=np.nan, right=np.nan)
-        # Save k-spectrum to xr.Dataset
-        # dfs = pd.DataFrame(data=ps_i, index=k_int)
+        # Define output dataset variables, save spectrum and U
         data_vars = {'k_spec':(['k'], ps_i,),
                      'U': ([], U),
                      }
-        # define coordinates
+        # Define coordinates
         coords = {'k': (['k'], k_int)}
     else:
         # Don't interpolate spectrum
-        # dfs = pd.DataFrame(data=ps_k, index=k)
         data_vars = {'k_spec':(['k'], ps_k,),
                      'U': ([], U),
                      }
-        # define coordinates
+        # Define coordinates
         coords = {'k': (['k'], k)}
     # Create output dataset
     dss = xr.Dataset(data_vars=data_vars, coords=coords,)
