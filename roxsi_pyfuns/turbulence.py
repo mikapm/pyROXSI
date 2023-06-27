@@ -101,9 +101,10 @@ def dissipation_rate(k, spec, fit='curve'):
     Fits k^{-5/3} curve to given spectrum and computes dissipation
     rate epsilon by
 
-        epsilon = (Cf / (24/55*C))**(3/2), (1)
+        epsilon = (Cf / C)**(3/2), (1)
     
-    where Cf is the intertial subrange fit coefficient and C=1.5.
+    where Cf is the intertial subrange fit coefficient and C=0.5,
+    following George et al. (1994, JGR)
 
     Parameters:
         k - array; wavenumbers for spectrum
@@ -142,12 +143,16 @@ def dissipation_rate(k, spec, fit='curve'):
         # Compute R^2 of fit (to log-transforms)
         r_squared = rps.r_squared(np.log(spec), np.log(fun(k, coeff)))
     # Compute dissipation rate epsilon following (1)
-    C = 1.5
-    epsilon = (coeff / (24/55*C))**(3/2)
+    # C = 1.5
+    # epsilon = (coeff / (12/55*C))**(3/2)
+    C = 0.5
+    epsilon = (coeff / C)**(3/2)
 
     return epsilon, r_squared, coeff
 
-def dissipation_rate_LT83(f, spec, fit='curve'):
+def dissipation_rate_LT83(f, spec, U, sigma, theta=0, fit='linear',
+                          fmin=None, fmax=None, min_fitlen=10, 
+                          skip_f=1):
     """
     Estimate turbulence dissipation rate from frequency
     spectrum following Lumley and Terray (1983, JPO).
@@ -166,12 +171,20 @@ def dissipation_rate_LT83(f, spec, fit='curve'):
     Parameters:
         f - array; frequency array for spectrum
         spec - array; frequency spectrum
-        fit - str; either 'curve' or 'linear'. If 'linear' fits
+        fit - str; either 'curve' or 'linear'. If 'linear', fits
               linear function to log transform of data.
+        U - scalar; the magnitude of the current
+        sigma - scalar; std of the wave-induced horizontal velocity
+        theta - scalar; angle between waves and current (deg)
+        fmin - scalar; optional, min. freq. for fit
+        fmax - scalar; optional, max. freq. for fit
+        min_fitlen - int; min. allowable length of fit (points)
+        skip_f - int; step size to skip over freq. ranges when
+                 finding best fit (>1 to speed up)
     
     Returns:
-        epsilon - dissipation rate from (1)
-        r_squared - R^2 of k^{-5-3} fit to spectrum
+        epsilon - dissipation rate
+        r_squared - R^2 of k^{-5-3} of best fit to spectrum
         coeff - fit coefficient
     """
     # Define fit functions
@@ -185,6 +198,75 @@ def dissipation_rate_LT83(f, spec, fit='curve'):
         Linear fit to inertial subrange with log transform.
         """
         return np.log(c) + (-5/3) * np.log(x)
+    # Define y variable U / sigma
+    y = U / sigma
+    # Compute I(y, theta) following Eq. (A13) of Trowbridge
+    # and Elgar (2001, JPO)
+    dx = 0.001 # x spacing
+    xmin, xmax = -1000, 1000 # integration x-variable limits
+    nx = int(np.abs(xmin - xmax) / dx) + 1
+    x = np.linspace(-1000, 1000, nx) # x variable of (A13)
+    integral = (x**2 - (2/y)*x + 1/y**2)**(1/3) * np.exp(-0.5*x**2)
+    I_arr = 1 / (np.sqrt(2*np.pi)) * y**(2/3) * np.sum(integral*dx)
+    # Set f limits of fits if not specified
+    if fmin is None:
+        # Set fmin as 3*fp
+        fp = f[np.argmax(spec).item()] # Peak freq. of spectrum
+        fmin = 3 * fp
+    if fmax is None:
+        # Use last available frequency as max.
+        fmax = f[-1]
+    # Get nearest indices for fmin, fmax
+    fmin_idx = (np.abs(f - fmin)).argmin()
+    fmax_idx = (np.abs(f - fmax)).argmin()
+    # Fit -5/3 power law to spectrum, find best fit by iterating
+    # over frequency ranges
+    start_inds = np.arange(fmin_idx, (fmax_idx-min_fitlen))[::skip_f]
+    end_inds = np.arange((fmin_idx+min_fitlen), fmax_idx)[::skip_f]
+    cnt = 0 # test counter
+    # Make lists of R^2, epsilon and fit coeff. of fits
+    r2_list = []
+    eps_list = []
+    coeff_list = []
+    for si in start_inds:
+        for ei in end_inds:
+            # Get spectral and frequency segments
+            sseg = spec[si:ei].copy()
+            fseg = f[si:ei].copy()
+            if len(sseg) < min_fitlen:
+                # Segment shorter than min. fit length -> skip
+                continue
+            cnt += 1 # add to test counter
+            # Fit power law to spectral segment using desired method
+            if fit == 'curve':
+                # Fit f^-5/3 curve function
+                popt, pcov = curve_fit(fun, fseg, sseg, p0=1e-4)
+                c_i = popt[0] # Fit coeff.
+                # Compute R^2 of fit
+                r2_i = rps.r_squared(sseg, fun(fseg, c_i))
+            # Linear fit to log transform of data
+            elif fit == 'linear':
+                # Fit f^-5/3 linear function in log space
+                popt, pcov = curve_fit(funl, fseg, np.log(sseg), p0=1e-4)
+                c_i = popt[0] # Fit coeff.
+                # Compute R^2 of fit (to log-transforms)
+                r2_i = rps.r_squared(np.log(sseg), np.log(fun(fseg, c_i)))
+            # Estimate dissipation rate as in Trowbridge & Elgar (2001)
+            C = 1.5
+            denom = (12/55 * C * U**(2/3) * I_arr) 
+            eps_i = (c_i / denom)**(3/2)
+            # Append to lists
+            r2_list.append(r2_i)
+            eps_list.append(eps_i)
+            coeff_list.append(c_i)
+    # Return parameters corresponding to highest R^2 score
+    max_rsq_ind = np.argmax(r2_list) # Ind. of Max. R^2
+    epsilon = eps_list[max_rsq_ind]
+    r_squared = r2_list[max_rsq_ind]
+    coeff = coeff_list[max_rsq_ind]
+
+    return epsilon, r_squared, coeff
+
 
     
 
