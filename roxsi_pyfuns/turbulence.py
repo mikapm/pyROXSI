@@ -162,10 +162,9 @@ def dissipation_rate_LT83(f, spec, U, sigma, theta=0, fit='linear',
 
     The model of the spectrum is (T&E01, Eq. (7)):
 
-    P_ww = 24/55 * C * eps**(2/3) * U**(2/3) * omega**(-5/3) * I,
+    P_ww = 12/55 * C * eps**(2/3) * U**(2/3) * omega**(-5/3) * I,
 
-    where the T&E01 equation has a typo (?) in the first fraction 
-    (12/55), C=1.5 and I accounts for the effects of the surface waves 
+    where C=1.5 and I accounts for the effects of the surface waves 
     (Eq. (A13)).
 
     Parameters:
