@@ -218,11 +218,13 @@ def dissipation_rate_LT83(f, spec, U, sigma, theta=0, fit='linear',
     # Get nearest indices for fmin, fmax
     fmin_idx = (np.abs(f - fmin)).argmin()
     fmax_idx = (np.abs(f - fmax)).argmin()
+    # Convert spectrum and freqs to radian frequencies
+    spec_rad = spec / (2*np.pi)
+    omega = f * 2*np.pi
     # Fit -5/3 power law to spectrum, find best fit by iterating
     # over frequency ranges
     start_inds = np.arange(fmin_idx, (fmax_idx-min_fitlen))[::skip_f]
     end_inds = np.arange((fmin_idx+min_fitlen), fmax_idx)[::skip_f]
-    cnt = 0 # test counter
     # Make lists of R^2, epsilon and fit coeff. of fits
     r2_list = []
     eps_list = []
@@ -230,26 +232,25 @@ def dissipation_rate_LT83(f, spec, U, sigma, theta=0, fit='linear',
     for si in start_inds:
         for ei in end_inds:
             # Get spectral and frequency segments
-            sseg = spec[si:ei].copy()
-            fseg = f[si:ei].copy()
+            sseg = spec_rad[si:ei].copy()
+            oseg = omega[si:ei].copy()
             if len(sseg) < min_fitlen:
                 # Segment shorter than min. fit length -> skip
                 continue
-            cnt += 1 # add to test counter
             # Fit power law to spectral segment using desired method
             if fit == 'curve':
                 # Fit f^-5/3 curve function
-                popt, pcov = curve_fit(fun, fseg, sseg, p0=1e-4)
+                popt, pcov = curve_fit(fun, oseg, sseg, p0=1e-4)
                 c_i = popt[0] # Fit coeff.
                 # Compute R^2 of fit
-                r2_i = rps.r_squared(sseg, fun(fseg, c_i))
+                r2_i = rps.r_squared(sseg, fun(oseg, c_i))
             # Linear fit to log transform of data
             elif fit == 'linear':
                 # Fit f^-5/3 linear function in log space
-                popt, pcov = curve_fit(funl, fseg, np.log(sseg), p0=1e-4)
+                popt, pcov = curve_fit(funl, oseg, np.log(sseg), p0=1e-4)
                 c_i = popt[0] # Fit coeff.
                 # Compute R^2 of fit (to log-transforms)
-                r2_i = rps.r_squared(np.log(sseg), np.log(fun(fseg, c_i)))
+                r2_i = rps.r_squared(np.log(sseg), np.log(fun(oseg, c_i)))
             # Estimate dissipation rate as in Trowbridge & Elgar (2001)
             C = 1.5
             denom = (12/55 * C * U**(2/3) * I_arr) 
