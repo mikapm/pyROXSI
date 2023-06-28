@@ -197,8 +197,8 @@ def dissipation_rate_LT83(f, spec, U, sigma, theta=0, fit='linear',
         Linear fit to inertial subrange with log transform.
         """
         return np.log(c) + (-5/3) * np.log(x)
-    # Define y variable U / sigma
-    y = U / sigma
+    # Define y variable sigma / U
+    y = sigma / U
     # Compute I(y, theta) following Eq. (A13) of Trowbridge
     # and Elgar (2001, JPO)
     dx = 0.001 # x spacing
