@@ -100,7 +100,8 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
     elif return_r and return_eul:
         return rot_arr, R, eul
 
-def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False):
+def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False,
+                   return_eul=False):
     """
     Use PCA rotation to convert from instrument coordinates to
     local cross-shore (PC1), along-shore (PC2) and vertical (PC3)
@@ -122,7 +123,7 @@ def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False):
     # Check if R is left-handed (det(R)=-1) 
     if np.linalg.det(R) < 0 and heading_exp is not None: 
         # Check if heading is off relative to expected heading
-        if np.abs(heading_exp - np.rad2deg(eul['eul3'])) > 45:
+        if np.abs(np.abs(heading_exp) - np.abs(np.rad2deg(eul['eul3']))) > 45:
             if print_msg:
                 print('Flipping y axis ...')
             # Redo rotation, but flip y axis
@@ -145,7 +146,7 @@ def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False):
         uw *= (-1)
     # Check if heading is off if det(R) = 1
     if np.linalg.det(R) > 0 and heading_exp is not None:
-        if np.abs(heading_exp - np.rad2deg(eul['eul3'])) > 90:
+        if np.abs(np.abs(heading_exp) - np.abs(np.rad2deg(eul['eul3']))) > 90:
             if print_msg:
                 print('Flipping horizontal velocity ... ')
             ucs *= (-1)
@@ -166,7 +167,10 @@ def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False):
     if print_msg:
         print('ucs-uw phase at max coh: {:.2f}'.format(pmc))
 
-    return ucs, uls, uw
+    if not return_eul:
+        return ucs, uls, uw
+    else:
+        return ucs, uls, uw, eul
 
 
 def rotate_euler(ux, uy, uz, eul1, eul2, eul3):
