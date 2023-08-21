@@ -9,7 +9,8 @@ from roxsi_pyfuns import wave_spectra as rpws
 
 
 def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, 
-               flipx=False, flipy=False, flipz=False, heading_exp=None):
+               flipx=False, flipy=False, flipz=False, heading_exp=None,
+               eul1_o=None, eul2_o=None, eul3_o=None):
     """
     Rotate x,y or x,y,z components according to their principal axes
     using principal component analysis (PCA).
@@ -24,6 +25,9 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
         flipy - bool; if True, flips (*-1) second column in R
         flipz - bool; if True, flips (*-1) third column in R
         heading_exp - scalar; expected heading angle
+        eul1_o - scalar; angles (deg) to add to eul1 for testing
+        eul2_o - scalar; angles (deg) to add to eul2 for testing
+        eul3_o - scalar; angles (deg) to add to eul3 for testing
 
     Returns:
         rot_arr - shape (N,2) or (N,3) array; rotated vectors such that:
@@ -66,13 +70,6 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
         # R[:,2] *= (-1)
         R[2,:] *= (-1)
 
-    # Check that determinant of R is 1
-#     if np.linalg.det(R) < 0:
-#         # If det(R) = -1, change the sign of the first axis
-#         R[:,0] *= (-1)
-#     assert(np.allclose(np.linalg.det(R), 1))
-    # Rotate components
-    rot_arr = R.dot(vel_arr.T).T
     # Euler angles
     eul = {} # Output dict
     # Get Euler angles from rotation matrix R if ndim=3
@@ -85,7 +82,23 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
         r = Rotation.from_matrix(R)
         # Sequence is 'x,y,z' b/c heading is eul3 (?)
         angles = r.as_euler("xyz", degrees=False)
+        # Change angles (for testing)?
+        if eul1_o is not None:
+            angles[0] += eul1_o
+        if eul2_o is not None:
+            angles[1] += eul2_o
+        if eul3_o is not None:
+            angles[2] += eul3_o
+        # Flag for angle offset testing
+        testing = eul1_o is not None or eul2_o is not None or eul3_o is not None
+        if testing:
+            # Get new rotation matrix based on offset angle(s)
+            R = Rotation.from_euler(angles)
+        # Get angle components for output
         eul['eul1'], eul['eul2'], eul['eul3'] = angles
+
+    # Rotate velocity components with R
+    rot_arr = R.dot(vel_arr.T).T
 
     # Only return rotated components?
     if not return_eul and not return_r:
