@@ -114,7 +114,7 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
         return rot_arr, R, eul
 
 def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False,
-                   return_eul=False):
+                   return_eul=False, **kwargs):
     """
     Use PCA rotation to convert from instrument coordinates to
     local cross-shore (PC1), along-shore (PC2) and vertical (PC3)
@@ -129,10 +129,11 @@ def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False,
         uz - shape N array; z-component of e.g. velocity
         heading_exp - scalar; expected heading angle in deg
         print_msg - bool; prints messages if True
+        **kwargs for rotate_pca()
     """
     # First rotate velocities based on principal axes
     vel_pca, R, eul = rotate_pca(ux=ux, uy=uy, uz=uz, return_r=True, 
-                                 return_eul=True, )
+                                 return_eul=True, **kwargs)
     # Check if R is left-handed (det(R)=-1) 
     if np.linalg.det(R) < 0 and heading_exp is not None: 
         # Check if heading is off relative to expected heading
