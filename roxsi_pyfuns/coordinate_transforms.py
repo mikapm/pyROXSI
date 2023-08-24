@@ -81,19 +81,19 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
 #                                  R[0,0] / np.cos(eul['eul1'])) # Heading
         r = Rotation.from_matrix(R)
         # Sequence is 'x,y,z' b/c heading is eul3 (?)
-        angles = r.as_euler("xyz", degrees=False)
+        angles = r.as_euler('xyz', degrees=False)
         # Change angles (for testing)?
         if eul1_o is not None:
-            angles[0] += eul1_o
+            angles[0] += np.deg2rad(eul1_o)
         if eul2_o is not None:
-            angles[1] += eul2_o
+            angles[1] += np.deg2rad(eul2_o)
         if eul3_o is not None:
-            angles[2] += eul3_o
+            angles[2] += np.deg2rad(eul3_o)
         # Flag for angle offset testing
-        testing = eul1_o is not None or eul2_o is not None or eul3_o is not None
+        testing = (eul1_o is not None or eul2_o is not None or eul3_o is not None)
         if testing:
             # Get new rotation matrix based on offset angle(s)
-            R = Rotation.from_euler(angles)
+            R = Rotation.from_euler('xyz', angles).as_matrix()
         # Get angle components for output
         eul['eul1'], eul['eul2'], eul['eul3'] = angles
 
