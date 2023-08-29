@@ -9,7 +9,7 @@ from roxsi_pyfuns import wave_spectra as rpws
 
 
 def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False, 
-               flipx=False, flipy=False, flipz=False, heading_exp=None,
+               flipx=False, flipy=False, flipz=False,
                eul1_o=None, eul2_o=None, eul3_o=None):
     """
     Rotate x,y or x,y,z components according to their principal axes
