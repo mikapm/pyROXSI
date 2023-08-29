@@ -59,16 +59,6 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
     pca.fit(vel_arr)
     # Get eigenvectors (ie rotation matrix R)
     R = pca.components_
-    # Flip axes in R?
-    if flipx:
-        # R[:,0] *= (-1)
-        R[0,:] *= (-1)
-    if flipy:
-        # R[:,1] *= (-1)
-        R[1,:] *= (-1)
-    if flipz:
-        # R[:,2] *= (-1)
-        R[2,:] *= (-1)
 
     # Euler angles
     eul = {} # Output dict
@@ -96,6 +86,14 @@ def rotate_pca(ux, uy, uz=None, return_r=False, return_eul=False,
             R = Rotation.from_euler('xyz', angles).as_matrix()
         # Get angle components for output
         eul['eul1'], eul['eul2'], eul['eul3'] = angles
+
+    # Flip axes in R?
+    if flipx:
+        R[0,:] *= (-1)
+    if flipy:
+        R[1,:] *= (-1)
+    if flipz:
+        R[2,:] *= (-1)
 
     # Rotate velocity components with R
     rot_arr = R.dot(vel_arr.T).T
@@ -171,7 +169,7 @@ def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False,
     ind_mcv = np.argmax((spec_r.coh_vz**2).sel(freq=slice(0.05, 0.3)).values).item()
     # Compute ucs-uw phase at max coherence
     pmc = np.rad2deg(spec_r.ph_uz.sel(freq=slice(0.05, 0.3)).isel(freq=ind_mcu).item())
-    # If phase is +90 -> flip ux velocity
+    # If phase is positive -> flip ux velocity (should be -90)
     if pmc > 0:
         ucs *= (-1)
         # Compute coherence and phase again
