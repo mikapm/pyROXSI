@@ -140,7 +140,7 @@ def enu_to_loc_pca(ux, uy, uz, heading_exp=None, print_msg=False,
                 print('Flipping y axis ...')
             # Redo rotation, but flip y axis
             vel_pca, R, eul = rotate_pca(ux=ux, uy=uy, uz=uz, return_r=True, 
-                                         return_eul=True, flipy=True, ) 
+                                         return_eul=True, flipy=True, **kwargs) 
     # Assume u_pc1=ucs, u_pc2=uls, u_pc3=uw
     ucs = vel_pca[:,0].copy()
     uls = vel_pca[:,1].copy()
