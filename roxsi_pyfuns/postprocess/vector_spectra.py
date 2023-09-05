@@ -68,7 +68,7 @@ if __name__ == '__main__':
     dsl_spec = []
 
     # Iterate over daily netcdf files and estimate spectra for 20-min. bursts
-    for ncf in ncf_vec[14:15]:
+    for ncf in ncf_vec[17:18]:
         # Read netcdf file
         dsv = xr.open_dataset(ncf, decode_coords='all')
         # Make range of spectral segment start times (20 min of data / hour)
@@ -89,6 +89,9 @@ if __name__ == '__main__':
                 # Can trust measured tilt angles (horizontal tilt sensor)
                 u = seg.uE.values.squeeze() # Use East vel. for u velocity
                 v = seg.uN.values.squeeze() # Use North vel. for v velocity
+                w = seg.uU.values.squeeze() # Vertical velocity
+                # Compute mean horizontal current magnitude and direction
+                U = np.mean(np.sqrt(u**2 + v**2))
                 # Estimate spectrum to get mean wave dir.
                 dss_init = rpws.spec_uvz(z=z, u=u, v=v, fs=16, fmerge=5, depth=h)
                 # Save mdir in geographical reference frame (met. convention)
@@ -96,7 +99,7 @@ if __name__ == '__main__':
                 # Rotate E, N velocities to cross/longshore
                 angle_math = 270 - angle_met # Math angle to rotate
                 if angle_math < 0:
-                        angle_math += 360
+                    angle_math += 360
                 angle_math = np.deg2rad(angle_math) # Radians
                 # Rotate East and North velocities to cross-shore (cs) and 
                 # long-shore (ls)
@@ -116,28 +119,35 @@ if __name__ == '__main__':
                 uzd = seg.uzd.to_dataframe() # Convert to pandas
                 uzd = uzd.interpolate(method='bfill').interpolate('ffill')
                 uzd -= uzd.mean()
+                # No geographical wave angle available (do not know true heading)
+                angle_met = np.nan
                 # Get correct expected heading for C4
                 if t0s <= pd.Timestamp('2022-07-13 04:00'):
                     he = heading_exp_1[args.mid]
                 else:
                     he = heading_exp_2[args.mid]
                 # Rotate velocities to cross/alongshore & vertical using PCA
-                ucs, uls, uw, eul = rpct.enu_to_loc_pca(ux=uxd.values.squeeze(), 
-                                                        uy=uyd.values.squeeze(), 
-                                                        uz=uzd.values.squeeze(),
-                                                        heading_exp=he, 
-                                                        return_eul=True,
-                                                        # print_msg=True,
-                                                        )               
+                ucs, uls, w, eul = rpct.enu_to_loc_pca(ux=uxd.values.squeeze(), 
+                                                       uy=uyd.values.squeeze(), 
+                                                       uz=uzd.values.squeeze(),
+                                                       heading_exp=he, 
+                                                       return_eul=True,
+                                                       # print_msg=True,
+                                                       )               
                 eul1 = np.rad2deg(eul['eul1'])
                 eul2 = np.rad2deg(eul['eul2'])
                 eul3 = np.rad2deg(eul['eul3'])
                 angles = np.array([eul['eul1'], eul['eul2'], eul['eul3']])
                 # Get rotation matrix (for debugging)
                 R = Rotation.from_euler('xyz', angles).as_matrix()
+                # R = Rotation.from_euler('zxz', angles).as_matrix()
                 print(f'eul1: {eul1:.2f}, eul2: {eul2:.2f}, eul3: {eul3:.2f}, ')
-                print('R: ', R)
-                print('rotvec: {} \n'.format(Rotation.from_euler('xyz', angles).as_rotvec()))
+                # print('R: ', R)
+                # print('rotvec: {} \n'.format(Rotation.from_euler('xyz', angles).as_rotvec()))
+                # Rotate point
+                xyz = np.array([1, 0, 1])
+                rot_arr = R.dot(xyz.T).T
+                print('rot_arr: {}'.format(rot_arr))
             # Estimate spectrum from cross/longshore velocities
             dss = rpws.spec_uvz(z=z, u=ucs, v=uls, fs=16, fmerge=5)
             # If mdir = 90 -> flip CS velocity
@@ -147,6 +157,7 @@ if __name__ == '__main__':
                 dss = rpws.spec_uvz(z=z, u=ucs, v=uls, fs=16, fmerge=5)
             # Assign time coordinate
             dss = dss.assign_coords(time=[t0s])
+            print('mdir={} \n'.format(dss.mdir.item()))
             # Convert time array to numerical format
             time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
             time = pd.to_datetime(dss.time.values).to_pydatetime()
@@ -154,13 +165,16 @@ if __name__ == '__main__':
                                 time_units, calendar='standard', 
                                 has_year_zero=True)
             dss.coords['time'] = time_vals.astype(float)
-            # print('mdir=', dss.mdir.item())
+            # print('mdir={} \n'.format(dss.mdir.item()))
             # Compute RMS orbital velocity
-#             u_rms = 
+            uspec = rpws.spec_uvz(ucs, fs=16, fmerge=5)
+            vspec = rpws.spec_uvz(uls, fs=16, fmerge=5)
+            # Variance of cross- and alongshore orbital velocities
+            m0u = rpws.spec_moment(uspec.Ezz.values, uspec.freq.values, 0)
+            m0v = rpws.spec_moment(vspec.Ezz.values, vspec.freq.values, 0)
+            Urms = np.sqrt(2 * (m0u + m0v))
 #             # Compute mean vertical velocity
-#             W = 
-#             # Compute mean horizontal current magnitude and direction
-#             U = np.mean(np.sqrt(u**2 + v**2))
+            W = np.nanmean(w)
 #             U_dir = 
             # Append to list
             dsl_spec.append(dss)
