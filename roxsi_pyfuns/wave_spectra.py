@@ -985,7 +985,7 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
     mg = int(mg - np.remainder(mg+1, 2))
     mm = int((mg - 1) / 2) # Half-window for averaging
     nmid = int(nfft/2) # Middle frequency (f = 0)
-    ifrm = np.concatenate([np.arange(nmid,1+mm-mg,-mg)[::-1], 
+    ifrm = np.concatenate([np.arange(nmid, 1+mm-mg, -mg)[::-1], 
                            np.arange(nmid+mg, nfft+1-mm, mg)]) # Frequency indices
     ifrm = ifrm[1:] # Lose first negative frequency (to comply with Matlab code)
     Bm = np.zeros((len(ifrm), len(ifrm))).astype(complex) # Merged bispec (unit m^3)
@@ -1095,7 +1095,8 @@ def bispectrum_martins(x, fs, h0, fp=None, nfft=None, overlap=75, wind='rectangu
     return dsb
 
 
-def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
+def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True,
+               return_bicoh=False):
     """
     Bispectral function based on spec_uvz().
     
@@ -1145,7 +1146,23 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
     ds = xr.Dataset(data_vars=data_vars, 
                     coords={'freq1': (['freq1'], f),
                             'freq2': (['freq2'], f)},
-                   )
+                    )
+    # If requesting also bicoherence, it will be returned in its own
+    # dataset (b/c frequencies not merged)
+    if return_bicoh:
+        nfb = int(np.floor(win_len / 2)) # No. of frequency bands
+        # Calculate Nyquist frequency and bandwidth (freq. resolution)
+        bwb = nyquist / nfb
+        # Find middle of each frequency band, only works when
+        # merging odd number of bands
+        fb = 1/wsec + bwb/2 + bwb*np.arange(nfb)
+        dofb = 2 * n_windows * 1 # degrees of freedom
+        dsb = xr.Dataset(data_vars={'Bc':(['freq1', 'freq2'], np.zeros((nfb, nfb))),
+                                    'B':(['freq1', 'freq2'], np.zeros((nfb, nfb))),
+                                    }, 
+                         coords={'freq1': (['freq1'], fb),
+                                 'freq2': (['freq2'], fb)},
+                         )
 
     # Initialize window array
     arr_win = np.zeros((n_windows, win_len)) 
@@ -1179,34 +1196,43 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
     # Compute power- and bispectrum, loop over windows
     ps_win = np.zeros((n_windows, win_len//2))
     B_win = np.zeros((win_len//2, win_len//2)).astype(complex)
+    Bd_win = np.zeros((win_len//2, win_len//2)).astype(float) # bicoh denominator (full)
     Bd1_win = np.zeros((win_len//2, win_len//2)).astype(float) # bicoh denominator 1
     Bd2_win = np.zeros((win_len//2, win_len//2)).astype(float) # bicoh denominator 2
     # Deal with f1 + f2 = f3 indices
     ifr1, ifr2 = np.meshgrid(np.arange(win_len//2), np.arange(win_len//2))
-    ifr3 = ifr1 + ifr2
+    ifr3 = ((ifr1+1) + (ifr2+1))-1
     # Mask for indices not corresponding to f1+f2
     ifm3val = np.logical_or((ifr3 < 0), (ifr3 >= win_len//2))
     ifr3[ifm3val] = 0
     # Iterate over windows and accumulate triple products
     for w in range(n_windows):
-        win = fft_win[w, :]
-        winc = np.conj(fft_win[w, :])
-        # Compute power spectrum
+        win = fft_win[w, :].copy()
+        win /= len(win)
+        winc = np.conj(fft_win[w, :]).copy()
+        winc /= len(winc)
+        # Compute power spectrum for window
         ps_win += np.real(win * winc)
-        # Compute bispectrum
-        B_win += win[ifr1] * win[ifr2] * winc[ifr3]
+        # Compute bispectrum for window
+        wf1 = win.ravel()[ifr1] # f1 terms of window
+        wf2 = win.ravel()[ifr2] # f2 terms of window
+        wf3 = winc.ravel()[ifr3] # f3 terms of window*
+        B_win += (wf1 * wf2 * wf3)
         # Denominator terms of bicoherence
-        Bd1_win += np.abs(win[ifr1] * win[ifr2])**2
-        Bd2_win += np.abs(win[ifr3])**2
+        Bd_win += (np.abs(wf1) * np.abs(wf2) * np.abs(wf3))
 
     # Ensemble average windows (take expected value)
     ps_win /= n_windows
     B_win[ifm3val] = 0
     B_win /= n_windows
-    Bd1_win[ifm3val] = 0
-    Bd1_win /= n_windows
-    Bd2_win[ifm3val] = 0
-    Bd2_win /= n_windows
+    Bd_win /= n_windows
+    # Do not merge freq's for bicoherence
+    zero_mask = np.where(Bd_win==0) # Set 0's to 1's for division
+    Bd_win[zero_mask] = 1
+    Bc = np.abs(B_win) / Bd_win
+    Bc[ifm3val] = 0
+    Bc[zero_mask] = 0
+    # Bc /= n_windows
 
     # ------------------- Merging over frequencies -------------------
     ps_win_merged = np.zeros((n_freqs, n_windows))
@@ -1215,55 +1241,34 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
     mm = int((mg - 1) / 2) # Half-window for averaging
     # ifrm = np.concatenate([np.arange(0, 1+mm-mg, -mg)[::-1], 
     #                        np.arange(mg, win_len+1-mm, mg)]) # Frequency indices
-    ifrm = np.arange(mm, win_len//2+1-mm, mg)#[::-1]
+    ifrm = np.arange(mm, win_len//2 + 1 - mm, mg)#[::-1]
 
     Bmw = np.zeros((n_freqs, n_freqs, n_windows)).astype(complex)
-    Bd1w = np.zeros((n_freqs, n_freqs, n_windows)).astype(float)
-    Bd2w = np.zeros((n_freqs, n_freqs, n_windows)).astype(float)
     # Loop over frequencies
-    for i,jfr1 in enumerate(range(n_freqs)):
+    for jfr1 in range(n_freqs):
         # Rows
         ifb1 = ifrm[jfr1] # mid of jfr1-merge-block
         # PSD
-        ps_win_merged[jfr1,:] = np.mean(ps_win[:, ifb1-mm:ifb1+mm+1])
+        ps_win_merged[jfr1,:] = np.mean(ps_win[:,ifb1-mm:ifb1+mm+1])
         # Columns for bispectrum and bicoherence
         for jfr2 in range(n_freqs):
             ifb2 = ifrm[jfr2] # mid of jfr2-merge-block
             Bmw[jfr1,jfr2,:] = np.mean(np.mean(B_win[np.arange(ifb1-mm, ifb1+mm+1), 
                                                      np.arange(ifb2-mm, ifb2+mm+1)]))
-            Bd1w[jfr1,jfr2,:] = np.mean(np.mean(Bd1_win[np.arange(ifb1-mm, ifb1+mm+1), 
-                                                        np.arange(ifb2-mm, ifb2+mm+1)]))
-            Bd2w[jfr1,jfr2,:] = np.mean(np.mean(Bd2_win[np.arange(ifb1-mm, ifb1+mm+1), 
-                                                        np.arange(ifb2-mm, ifb2+mm+1)]))
 
-    # Ensemble average windows together:
+    # Ensemble average windows together (not for bicoherence):
     # Take the average of all windows at each freq band
     # and divide by N*(sample rate) to get power spectral density
     # The two is b/c we threw the redundant half of the FFT away,
     # so need to multiply the PSD by 2.
     psd = np.mean(ps_win_merged, axis=1) / (win_len/2 * fs)
-    Bm = np.mean(Bmw, axis=2) / (win_len/2 * fs**2)
-    Bd1m = np.mean(Bd1w, axis=2) / (win_len/2 * fs**2)
-    Bd2m = np.mean(Bd2w, axis=2) / (win_len/2 * fs**2)
-    # Bicoherence
-    np.seterr(all="ignore") # Ignore RuntimeWarnings
-    Bc = np.abs(Bm) / np.sqrt(Bd1m*Bd2m)
-    # Bi-phase
+    Bm = np.mean(Bmw, axis=2) / (win_len/2 * fs)**2
     
     # Save arrays to output dataset
     ds['PSD'].values = psd
     ds['B'].values = Bm
-    ds['Bc'].values = Bc
-    # Save DoF and 80%, 90%, 95% and 99% thresholds for significance (Elgar & Guza, 1985)
-    b99 = np.sqrt(9.2 / (dof-1))
-    b95 = np.sqrt(6 / (dof-1))
-    b90 = np.sqrt(4.6 / (dof-1))
-    b80 = np.sqrt(3.2 / (dof-1))
-    ds['dof'] = ([], dof)
-    ds['b99'] = ([], b99)
-    ds['b95'] = ([], b95)
-    ds['b90'] = ([], b90)
-    ds['b80'] = ([], b80)
+    # ds['Bc'].values = Bc
+
     # Depth
     ds['h0'] = ([], h0)
 
@@ -1275,7 +1280,24 @@ def bispectrum(z, wsec=256, fs=5.0, fmerge=3, h0=0, return_krms=True):
         ds['k_rms'].attrs['long_name'] = 'Root-mean-square wavenumbers following H02'
         ds['k_rms'].attrs['units'] = '1/m'
 
-    return ds
+    if return_bicoh:
+        # Save bicoherence to output dataset
+        dsb['Bc'].values = Bc
+        # Un-merged bispectrum
+        dsb['B'].values = B_win
+        # Save DoF and 80%, 90%, 95% and 99% thresholds for significance (Elgar & Guza, 1985)
+        b99 = np.sqrt(9.2 / (dofb-1))
+        b95 = np.sqrt(6 / (dofb-1))
+        b90 = np.sqrt(4.6 / (dofb-1))
+        b80 = np.sqrt(3.2 / (dofb-1))
+        dsb['dof'] = ([], dof)
+        dsb['b99'] = ([], b99)
+        dsb['b95'] = ([], b95)
+        dsb['b90'] = ([], b90)
+        dsb['b80'] = ([], b80)
+        return ds, dsb
+    else:
+        return ds
 
 
 if __name__ == '__main__':
