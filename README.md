@@ -18,9 +18,9 @@ mamba env update --file environment.yml --prune
 ## Usage
 This repository consists mainly of two types of files: Python scripts for processing raw ADCP and ADV data, and Jupyter Notebooks for analyzing the processed data.
 
-Most processing scripts and a readme with instructions are located in the **roxsi-pyfuns/preprocess** folder. 
+Most processing scripts and a readme with instructions are located in the **roxsi_pyfuns/preprocess** folder. 
 
-Analysis notebooks are located in the **roxsi-pyfuns/notebooks** folder.
+Analysis notebooks are located in the **roxsi_pyfuns/notebooks** folder.
 
-General functions used in both processing scripts and analysis notebooks are located in the main **roxsi-pyfuns** folder.
+General functions used in both processing scripts and analysis notebooks are located in the main **roxsi_pyfuns** folder.
 
