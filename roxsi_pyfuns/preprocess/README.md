@@ -29,3 +29,11 @@ The main class is called `ADCP()`; see docstring for `__init__()` for further in
 * `p2eta_krms()`: Linear and weakly nonlinear pressure--sea surface transfer functions following Martins et al. (2021). Uses root-mean-square wavenumbers of Herbers et al. (2002) instead of linear wavenumbers. This can help delay the blow up of high-frequency components in intermediate water depth.
 
 * `wavespec()`: Estimate (directional) wave spectra using surface elevation (AST or pressure-derived) and East/North velocity components. Calls the `spec_uvz()` function in [../wave_spectra.py](../wave_spectra.py).
+
+* `save_vel_nc()`: Saves velocity/AST/pressure data read and processed from .mat files into netCDF. Also sets CF-compliant units and attributes to variables and coordinates.
+
+* `save_spec_nc()`: Saves wave spectra to separate netCDF files. Also tries to set CF-compliant units and attributes.
+
+### [ADV processing: vector_preprocess.py](vector_preprocess.py) 
+
+Process raw Nortek Vector ADV data.
