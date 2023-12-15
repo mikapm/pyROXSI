@@ -18,7 +18,7 @@ The main class is called `ADCP()`; see docstring for `__init__()` for further in
 
 * `ampcorr2ds()`: As above, but for beam velocity amplitude and correlation arrays.
 
-* `loaddata_vel()`: Main data reader function for both AST, pressure and velocities. Input flags for e.g. QC; see docstring for detailed instructions.
+* `loaddata_vel()`: Main data reader function for both AST, pressure and velocities. Input flags for e.g. QC; see docstring for detailed instructions. Also converts velocities from beam coordinates to East, North, Up components using the heading, pitch and roll time series (see the `beam2enu()` function in [../coordinate_transforms.py](../coordinate_transforms.py)).
 
 * `despike_GN02()`: Velocity despiking scheme following Goring and Nikora (2002). By default not used for ADCP data, only ADV data (see [vector_preprocess.py](vector_preprocess.py)). To use, set `despike_vel=True` in the `loaddata_vel()` function. Despikes velocity timeseries for each depth bin separately.
 
@@ -36,4 +36,6 @@ The main class is called `ADCP()`; see docstring for `__init__()` for further in
 
 ### [ADV processing: vector_preprocess.py](vector_preprocess.py) 
 
-Process raw Nortek Vector ADV data.
+Process raw Nortek Vector ADV data. Similar structure to the [signature_preprocess.py](signature_preprocess.py) script, with main class called `ADV()`. Instead of .mat files, the ADV readers use Nortek's .dat, .sen, and .hdr file formats. The central functions under the `ADV` class are described below. Again, see individual functions' docstrings for detailed usage instructions.
+
+* `loaddata()`: Main data reader for velocities and pressure. Uses the .dat files for reading raw data, and .sen files for heading, pitch and roll (H,P,R) time series. The H,P,R data is only saved at 1-Hz resolution, so it is linearly interpolated to the 16-Hz sampling rate of the ADV velocities.
