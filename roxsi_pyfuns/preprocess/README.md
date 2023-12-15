@@ -22,7 +22,7 @@ The main class is called `ADCP()`; see docstring for `__init__()` for further in
 
 * `despike_GN02()`: Velocity despiking scheme following Goring and Nikora (2002). By default not used for ADCP data, only ADV data (see [vector_preprocess.py](vector_preprocess.py)). To use, set `despike_vel=True` in the `loaddata_vel()` function. Despikes velocity timeseries for each depth bin separately.
 
-* `despike_GP()`: AST despiking scheme using Gaussian Process (GP) based method of Malila et al. (2023). Used by default in `loaddata_vel()`; set `despike_ast=True` to disable. Quite slow, but seems to work well for the specific noise characteristics of the AST signal. The main script of `signature_preprocess.py` also saves separate .csv files containing only the despiked AST signals, which can be read later if needed.
+* `despike_GP()`: AST despiking scheme using Gaussian Process (GP) based method of Malila et al. (2023). Used by default in `loaddata_vel()`; set `despike_ast=False` to disable. Quite slow, but seems to work well for the specific noise characteristics of the AST signal. The main script of `signature_preprocess.py` also saves separate .csv files containing only the despiked AST signals, which can be read later if needed.
 
 * `p2z_lin()`: Linear transfer function for pressure--sea surface transformation.
 
