@@ -18,4 +18,14 @@ The main class is called `ADCP()`; see docstring for `__init__()` for further in
 
 * `ampcorr2ds()`: As above, but for beam velocity amplitude and correlation arrays.
 
-* `loaddata_vel()`: Main data reader function for both AST and velocities. Input flags for e.g. QC; see docstring for detailed instructions.
+* `loaddata_vel()`: Main data reader function for both AST, pressure and velocities. Input flags for e.g. QC; see docstring for detailed instructions.
+
+* `despike_GN02()`: Velocity despiking scheme following Goring and Nikora (2002). By default not used for ADCP data, only ADV data (see [vector_preprocess.py](vector_preprocess.py)). To use, set `despike_vel=True` in the `loaddata_vel()` function. Despikes velocity timeseries for each depth bin separately.
+
+* `despike_GP()`: AST despiking scheme using Gaussian Process (GP) based method of Malila et al. (2023). Used by default in `loaddata_vel()`; set `despike_ast=True` to disable. Quite slow, but seems to work well for the specific noise characteristics of the AST signal. The main script of `signature_preprocess.py` also saves separate .csv files containing only the despiked AST signals, which can be read later if needed.
+
+* `p2z_lin()`: Linear transfer function for pressure--sea surface transformation.
+
+* `p2eta_krms()`: Linear and weakly nonlinear pressure--sea surface transfer functions following Martins et al. (2021). Uses root-mean-square wavenumbers of Herbers et al. (2002) instead of linear wavenumbers. This can help delay the blow up of high-frequency components in intermediate water depth.
+
+* `wavespec()`: Estimate (directional) wave spectra using surface elevation (AST or pressure-derived) and East/North velocity components. Calls the `spec_uvz()` function in [../wave_spectra.py](../wave_spectra.py).
