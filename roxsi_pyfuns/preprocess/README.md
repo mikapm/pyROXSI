@@ -36,6 +36,16 @@ The main class is called `ADCP()`; see docstring for `__init__()` for further in
 
 ### [ADV processing: vector_preprocess.py](vector_preprocess.py) 
 
-Process raw Nortek Vector ADV data. Similar structure to the [signature_preprocess.py](signature_preprocess.py) script, with main class called `ADV()`. Instead of .mat files, the ADV readers use Nortek's .dat, .sen, and .hdr file formats. The central functions under the `ADV` class are described below. Again, see individual functions' docstrings for detailed usage instructions.
+Process raw Nortek Vector ADV data. Similar structure to the [signature_preprocess.py](signature_preprocess.py) script, with main class called `ADV()`. Instead of .mat files, the ADV readers use Nortek's .dat, .sen, and .hdr file formats. The central functions under the `ADV` class are described below. Again, see individual functions' docstrings for detailed usage instructions. Main/example script at the end of the file to allow running the processing via command line.
 
 * `loaddata()`: Main data reader for velocities and pressure. Uses the .dat files for reading raw data, and .sen files for heading, pitch and roll (H,P,R) time series. The H,P,R data is only saved at 1-Hz resolution, so it is linearly interpolated to the 16-Hz sampling rate of the ADV velocities.
+
+* `despike_correlations()`: Despike ADV velocities using correlation signal. Not as effective as phase-space despiking scheme of Goring & Nikora (2002); see below.
+
+* `despike_GN02()`: Default phase-space despiking scheme following Goring and Nikora (2002).
+
+* `p2eta_lin()`: Linear pressure-surface transfer function.
+
+* `p2eta_krms()`: Linear and weakly nonlinear pressure--sea surface transfer functions following Martins et al. (2021). Uses root-mean-square wavenumbers of Herbers et al. (2002) instead of linear wavenumbers. This can help delay the blow up of high-frequency components in intermediate water depth.
+
+* `df2nc()`: Saves temporary pandas.Dataframe objects to netCDF format. Also sets CF-compliant units and other attributes to variables and coordinates.
