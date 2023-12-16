@@ -2,7 +2,7 @@
 
 The python files in this folder contain general functions used both in processing and analysis scripts. The contents of the .py files are summarized below; see docstrings for the individual functions for detailed usage instructions.
 
-In order to be able to import these functions, make sure to add the base repository to your Python path: `export PYTHONPATH="$PYTHONPATH:PATH TO/pyROXSI"`.
+In order to be able to import these functions, make sure to add the base repository to your Python path: `export PYTHONPATH="$PYTHONPATH:PATH TO/pyROXSI"`. This will allow you to import functions by, e.g., `from roxsi_pyfuns import wave_spectra as rpws`.
 
 * [adcp_funs.py](adcp_funs.py): Only contains the contamination_range() function, used to estimate sidelobe contamination range for ADCP data.
 
