@@ -1,6 +1,14 @@
 # Raw data processing routines
 
-## Overview of files and their functionality
+This directory contains scripts and functions used to convert raw data from various instruments to more organized Level-1 netCDF files. The ADCP and ADV processing scripts are described in more detailed in the next section, but the other files present in this directory are described briefly here:
+
+* [bathy_mat2nc.py](bathy_mat2nc.py): Script to save original _eTracs_ bathymetry product (focused on the small-scale array rock) from .mat format to netCDF. Based on a Matlab script by J. Rosman.
+
+* [bathy_mat2nc_updated.py](bathy_mat2nc_updated.py): Updated bathymetry processing script, uses more comprehensive bathy dataset compiled by O. Marques.
+
+* [rbr_preprocess.py](rbr_preprocess.py): Processing script for RBR pressure and temperature sensors. Mainly converts .mat files to netCDF and applies pressure transfer functions to estimate sea surface elevation.
+
+## Overview of main processing files and their functionality
 
 ### [ADCP processing: signature_preprocess.py](signature_preprocess.py)
 
