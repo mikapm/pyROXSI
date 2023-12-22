@@ -603,7 +603,7 @@ if not os.path.isfile(fn_sat) or args.overwrite_fig:
     # xx, yy = sm.grid.transform(xG, yG, crs=p)
     xx, yy = sm.grid.transform(Xsu, Ysu, crs=proj_utm)
     ax.contourf(xx, yy, Zsu, cmap=cmocean.cm.deep_r, 
-                     vmin=vmin, vmax=vmax)
+                vmin=vmin, vmax=vmax)
     # Mark large-scale array mooring locations
     for row in df_lsa.iterrows():
         if row[1]['Array'] == 'Asilomar':
