@@ -24,6 +24,10 @@ dependencies:
   - cmcrameri
   - motionless
   - quaternion
+  - vtk
+  - pyvista
+  - wavespectra
+  - typing_extensions=4.7.1
   - salem
   - shapely
   - scikit-learn
