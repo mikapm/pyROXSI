@@ -1,6 +1,6 @@
 """
 Estimate cross-alongshore wave spectra from Nortek
-Signature1000 ADCP data using local ROXSI x,y coord.
+Signature1000 ADCP data using Geographical coord.
 system.
 """
 
@@ -16,9 +16,14 @@ from datetime import datetime as DT
 from cftime import date2num
 from argparse import ArgumentParser
 from tqdm import tqdm
+import wavespectra
 from signature_preprocess import ADCP
 from roxsi_pyfuns import coordinate_transforms as rpct
 from roxsi_pyfuns import wave_spectra as rpws
+
+# Suppress warnings
+import warnings
+warnings.filterwarnings('ignore')
 
 # Input arguments
 def parse_args(**kwargs):
@@ -27,6 +32,11 @@ def parse_args(**kwargs):
             help=("Path to data root directory"),
             type=str,
             default=r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray',
+            )
+    parser.add_argument("-outroot", 
+            help=("Path to output directory"),
+            type=str,
+            default=r'/home/mikapm/ROXSI/Asilomar2022/SmallScaleArray',
             )
     parser.add_argument("-fillvalue", 
             help=("Fill value for NaN to save in netcdf file"),
@@ -53,12 +63,12 @@ ref_date=pd.Timestamp('2000-01-01')
 
 # Paths, files
 sigdir = os.path.join(args.dr, 'Signatures', 'Level1', args.ser)
-outdir = os.path.join(sigdir, 'Spectra')
+outdir = os.path.join(args.outroot, 'Spectra_ENU')
 if not os.path.isdir(outdir):
     # Make output dir.
     os.mkdir(outdir)
 # Output netcdf filename
-fn_out = os.path.join(outdir, 'Asilomar_2022_SSA_Signature_{}_spec_AST.nc'.format(
+fn_out = os.path.join(outdir, 'Asilomar_2022_SSA_Signature_{}_spec_AST_ENU.nc'.format(
     args.ser))
 
 # Dict for connecting serial no. w/ mooring ID
@@ -66,6 +76,12 @@ mids = {'103063': 'L1', '103088': 'C1', '103094': 'C3',
         '103110': 'C6', '103206': 'L5'}
 # Get correct mooring ID for chosen serial number
 mid = mids[args.ser]
+
+# Wind speed & direction
+fnw = os.path.join(args.dr, 'ROXSI_wind_corr.csv')
+dfw = pd.read_csv(fnw, parse_dates=['time']).set_index('time')
+# Interpolate over missing wind speed values
+dfw = dfw.interpolate()
 
 # Use bathymetry to get location + MSL
 bathydir = os.path.join(args.dr, 'Bathy') # Bathymetry dir.
@@ -158,40 +174,82 @@ if not os.path.isfile(fn_out):
             # Surrounding depth based on L5
             depth_surr = -z_msl_surr + msl_dev
 
-            # Rotate East, North velocities to cross-/alongshore vel.
-            ui = seg.vEhpr.values
-            vi = seg.vNhpr.values
-            # Rotation angle (use ROXSI LSA reference angle from bathy)
-            ref_ang = int(dsb.attrs['reference_angle'][:3])
-            angle_math = 270 - ref_ang
-            if angle_math < 0:
-                angle_math += 360
-            angle_math = np.deg2rad(angle_math) # radians
-            # Initialize cross-/longshore velocity arrays
-            ul = np.ones_like(ui) * np.nan # Cross-shore vel.
-            vl = np.ones_like(vi) * np.nan # Along-shore vel.
-            # Rotate at each range level
-            for i,r in enumerate(seg.range.values):
-                # Copy E, N velocity components
-                ur = seg.vEhpr.sel(range=r).values.copy()
-                vr = seg.vNhpr.sel(range=r).values.copy()
-                # Rotate
-                ul[:,i], vl[:,i] = rpct.rotate_vel(ur, vr, angle_math)
-            # Save rotated velocities in dataset segment 
-            seg['vCS'] = (['time', 'range'], ul)
-            seg['vLS'] = (['time', 'range'], vl)
+#             # Rotate East, North velocities to cross-/alongshore vel.
+#             ui = seg.vEhpr.values
+#             vi = seg.vNhpr.values
+#             # Rotation angle (use ROXSI LSA reference angle from bathy)
+#             ref_ang = int(dsb.attrs['reference_angle'][:3])
+#             angle_math = 270 - ref_ang
+#             if angle_math < 0:
+#                 angle_math += 360
+#             angle_math = np.deg2rad(angle_math) # radians
+#             # Initialize cross-/longshore velocity arrays
+#             ul = np.ones_like(ui) * np.nan # Cross-shore vel.
+#             vl = np.ones_like(vi) * np.nan # Along-shore vel.
+#             # Rotate at each range level
+#             for i,r in enumerate(seg.range.values):
+#                 # Copy E, N velocity components
+#                 ur = seg.vEhpr.sel(range=r).values.copy()
+#                 vr = seg.vNhpr.sel(range=r).values.copy()
+#                 # Rotate
+#                 ul[:,i], vl[:,i] = rpct.rotate_vel(ur, vr, angle_math)
+#             # Save rotated velocities in dataset segment 
+#             seg['vCS'] = (['time', 'range'], ul)
+#             seg['vLS'] = (['time', 'range'], vl)
 
             # Estimate spectrum using cross-/alongshore velocities
             seglen = 60 * 60 # Segment length (seconds)
             if noast:
                 # No AST signal -> use eta_lin_krms
-                dss = adcp.wavespec(seg, u='vCS', v='vLS', z='eta_lin_krms',
+                # dss = adcp.wavespec(seg, u='vCS', v='vLS', z='eta_lin_krms',
+                dss = adcp.wavespec(seg, u='vEhpr', v='vNhpr', z='eta_lin_krms',
                                     fmin=0.05, fmax=1.0, seglen=seglen,
                                     depth=depth_loc)
             else:
-                dss = adcp.wavespec(seg, u='vCS', v='vLS', z='ASTd',
+                dss = adcp.wavespec(seg, u='vEhpr', v='vNhpr', z='ASTd',
                                     fmin=0.05, fmax=1.0, seglen=seglen,
                                     depth=depth_loc)
+
+            # Spectral partitioning following Hanson et al. (2008),
+            # as implemented in 'wavespectra' python library
+            efth = dss.Efth.to_dataset() # Dir. spec dataset
+            efth = efth.isel(time=0) # Remove time dim
+            efth = efth.rename_dims({'direction':'dir'}) # Rename to wavespectra conventions
+            efth = efth.drop_vars(['direction', 'time']) # No time var in wavespectra
+            efth = efth.rename_vars({'Efth':'efth'}) # Rename to wavespectra conventions
+            efth['site'] = ([], 'Asilomar') # Need site variable in wavespectra
+            # Make wavespectra object
+            ws = wavespectra.read_dataset(efth)
+            # Input wind speed, direction and depth as DataArrays
+            if t0s in dfw.index:
+                # One or two time steps are missing in wind file, use previous hour if 
+                # current hour not available
+                u4 = dfw['windspeed_4m'].loc[t0s]
+                wd = dfw['winddir'].loc[t0s]
+                wsda = xr.DataArray(u4) # Need DataArray input for wavespec partition
+                wdda = xr.DataArray(wd)
+                dda = xr.DataArray(depth_loc)
+            else:
+                if t0s < dfw.index[0]:
+                    # No wind data available for before 2022-06-24 10:00
+                    u4 = np.nan
+                    wd = np.nan
+                    wsda = xr.DataArray(np.nan) # Need DataArray input for wavespec partition
+                    wdda = xr.DataArray(np.nan)
+                    dda = xr.DataArray(depth_loc)
+            # Partition spectrum
+            dspart = ws.spec.partition(wsda, wdda, dda, swells=3)
+            # Windsea fp & Hs from partition
+            fp_winds = 1 / dspart.spec.stats(["tp"]).tp.sel(part=0).values.item()
+            hs_winds = dspart.spec.stats(["hs"]).hs.sel(part=0).values.item()
+            # Swell fp & Hs 1, 2, 3 from partition
+            fp_swell1 = 1 / dspart.spec.stats(["tp"]).tp.sel(part=1).values.item()
+            hs_swell1 = dspart.spec.stats(["hs"]).hs.sel(part=1).values.item()
+            fp_swell2 = 1 / dspart.spec.stats(["tp"]).tp.sel(part=2).values.item()
+            hs_swell2 = dspart.spec.stats(["hs"]).hs.sel(part=2).values.item()
+            fp_swell3 = 1 / dspart.spec.stats(["tp"]).tp.sel(part=3).values.item()
+            hs_swell3 = dspart.spec.stats(["hs"]).hs.sel(part=3).values.item()
+
             # Convert time array to numerical format
             time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
             time = pd.to_datetime(dss.time.values).to_pydatetime()
@@ -230,16 +288,16 @@ if not os.path.isfile(fn_out):
             dss.z_msl.attrs['units'] = 'm'
             # Mean velocities
             z_range = dss.vel_binh.item() # Range bin used for velocities
-            uCS_mean = seg.vCS.sel(range=z_range).mean(dim='time').item()
-            dss['uCS_mean'] = (['time'], [uCS_mean])
-            dss.uCS_mean.attrs['standard_name'] = 'mean_cross_shore_water_velocity'
-            dss.uCS_mean.attrs['long_name'] = 'Mean cross-shore velocity'
-            dss.uCS_mean.attrs['units'] = 'm/s'
-            uLS_mean = seg.vLS.sel(range=z_range).mean(dim='time').item()
-            dss['uLS_mean'] = (['time'], [uLS_mean])
-            dss.uLS_mean.attrs['standard_name'] = 'mean_along_shore_water_velocity'
-            dss.uLS_mean.attrs['long_name'] = 'Mean along-shore velocity'
-            dss.uLS_mean.attrs['units'] = 'm/s'
+            uE_mean = seg.vEhpr.sel(range=z_range).mean(dim='time').item()
+            dss['uE_mean'] = (['time'], [uE_mean])
+            dss.uE_mean.attrs['standard_name'] = 'mean_eastward_water_velocity'
+            dss.uE_mean.attrs['long_name'] = 'Mean eastward water velocity'
+            dss.uE_mean.attrs['units'] = 'm/s'
+            uN_mean = seg.vNhpr.sel(range=z_range).mean(dim='time').item()
+            dss['uN_mean'] = (['time'], [uN_mean])
+            dss.uN_mean.attrs['standard_name'] = 'mean_north_water_velocity'
+            dss.uN_mean.attrs['long_name'] = 'Mean northward water velocity'
+            dss.uN_mean.attrs['units'] = 'm/s'
             # Surface elevation statistics
             ast_eta = ast - ast.mean() # AST surface elevation
             skew = stats.skew(ast_eta) # Surf. elev. skewness
@@ -266,10 +324,10 @@ if not os.path.isfile(fn_out):
             dss.fp.attrs['long_name'] = 'Spectral peak frequency'
             dss.fp.attrs['units'] = 'Hz'
             # Peak wavenumber (linear, surrounding water depth)
-            kp = rpws.waveno_full(2*np.pi * fp, d=depth_surr).item()
+            kp = rpws.waveno_full(2*np.pi * fp, d=depth_loc).item()
             dss['kp'] = (['time'], [kp])
             dss.kp.attrs['standard_name'] = 'sea_surface_wavenumber_at_variance_spectral_density_maximum'
-            dss.kp.attrs['long_name'] = 'Linear peak wavenumber in surrounding water depth at L5 mooring'
+            dss.kp.attrs['long_name'] = 'Linear peak wavenumber in local water depth'
             dss.kp.attrs['units'] = 'rad/m'
             # Shallowness parameter (local water depth)
             mu = (kp * depth_loc)**2 
@@ -305,6 +363,50 @@ if not os.path.isfile(fn_out):
             dss.m0v.attrs['standard_name'] = 'along_shore_velocity_variance_spectral_density'
             dss.m0v.attrs['long_name'] = 'Zeroth-order along-shore velocity variance spectral moment m0'
             dss.m0v.attrs['units'] = 'dimensionless'
+
+            # Spectral partition output
+            dss['Hm0_windsea'] = (['time'], [hs_winds])
+            dss.Hm0_windsea.attrs['standard_name'] = 'sea_surface_wind_wave_significant_height'
+            dss.Hm0_windsea.attrs['long_name'] = 'Windsea significant wave height'
+            dss.Hm0_windsea.attrs['units'] = 'm'
+            dss['Hm0_swell1'] = (['time'], [hs_swell1])
+            dss.Hm0_swell1.attrs['standard_name'] = 'sea_surface_primary_swell_wave_significant_height'
+            dss.Hm0_swell1.attrs['long_name'] = 'Primary swell significant wave height'
+            dss.Hm0_swell1.attrs['units'] = 'm'
+            dss['Hm0_swell2'] = (['time'], [hs_swell2])
+            dss.Hm0_swell2.attrs['standard_name'] = 'sea_surface_secondary_swell_wave_significant_height'
+            dss.Hm0_swell2.attrs['long_name'] = 'Secondary swell significant wave height'
+            dss.Hm0_swell2.attrs['units'] = 'm'
+            dss['Hm0_swell3'] = (['time'], [hs_swell3])
+            dss.Hm0_swell3.attrs['standard_name'] = 'sea_surface_tertiary_swell_wave_significant_height'
+            dss.Hm0_swell3.attrs['long_name'] = 'Tertiary swell significant wave height'
+            dss.Hm0_swell3.attrs['units'] = 'm'
+            dss['fp_windsea'] = (['time'], [fp_winds])
+            dss.fp_windsea.attrs['standard_name'] = 'sea_surface_wind_wave_peak_frequency'
+            dss.fp_windsea.attrs['long_name'] = 'Windsea peak frequency'
+            dss.fp_windsea.attrs['units'] = 'Hz'
+            dss['fp_swell1'] = (['time'], [fp_swell1])
+            dss.fp_swell1.attrs['standard_name'] = 'sea_surface_primary_swell_wave_peak_frequency'
+            dss.fp_swell1.attrs['long_name'] = 'Primary swell peak frequency'
+            dss.fp_swell1.attrs['units'] = 'Hz'
+            dss['fp_swell2'] = (['time'], [fp_swell2])
+            dss.fp_swell2.attrs['standard_name'] = 'sea_surface_secondary_swell_wave_peak_frequency'
+            dss.fp_swell2.attrs['long_name'] = 'Secondary swell peak frequency'
+            dss.fp_swell2.attrs['units'] = 'Hz'
+            dss['fp_swell3'] = (['time'], [fp_swell3])
+            dss.fp_swell3.attrs['standard_name'] = 'sea_surface_tertiary_swell_wave_peak_frequency'
+            dss.fp_swell3.attrs['long_name'] = 'Tertiary swell peak frequency'
+            dss.fp_swell3.attrs['units'] = 'Hz'
+
+            # Wind speed & Direction
+            dss['windspeed'] = (['time'], [u4])
+            dss.windspeed.attrs['standard_name'] = 'wind_speed'
+            dss.windspeed.attrs['long_name'] = 'ISPAR wind speed at 4m'
+            dss.windspeed.attrs['units'] = 'm/s'
+            dss['winddir'] = (['time'], [wd])
+            dss.windspeed.attrs['standard_name'] = 'wind_from_direction'
+            dss.windspeed.attrs['long_name'] = 'ISPAR wind direction (from)'
+            dss.windspeed.attrs['units'] = 'm/s'
 
             # Set variable attributes for output netcdf file
             dss.Ezz.attrs['standard_name'] = 'sea_surface_wave_variance_spectral_density'
@@ -428,7 +530,7 @@ if not os.path.isfile(fn_out):
             dss.attrs['instrument'] = 'Nortek Signature 1000'
             dss.attrs['x_loc'] = xl
             dss.attrs['y_loc'] = yl
-            dss.attrs['reference_angle'] = '{} deg'.format(ref_ang)
+            # dss.attrs['reference_angle'] = '{} deg'.format(ref_ang)
             dss.attrs['mooring_ID'] = mid
             dss.attrs['serial_number'] = args.ser
             dss.attrs['transducer_height'] = '{} m'.format(adcp.zp)
