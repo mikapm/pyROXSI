@@ -68,7 +68,7 @@ if not os.path.isdir(outdir):
     # Make output dir.
     os.mkdir(outdir)
 # Output netcdf filename
-fn_out = os.path.join(outdir, 'Asilomar_2022_SSA_Signature_{}_spec_AST_ENU.nc'.format(
+fn_out = os.path.join(outdir, 'Asilomar_2022_SSA_Signature_{}_spec_AST_shore_nearbed.nc'.format(
     args.ser))
 
 # Dict for connecting serial no. w/ mooring ID
@@ -174,41 +174,42 @@ if not os.path.isfile(fn_out):
             # Surrounding depth based on L5
             depth_surr = -z_msl_surr + msl_dev
 
-#             # Rotate East, North velocities to cross-/alongshore vel.
-#             ui = seg.vEhpr.values
-#             vi = seg.vNhpr.values
-#             # Rotation angle (use ROXSI LSA reference angle from bathy)
-#             ref_ang = int(dsb.attrs['reference_angle'][:3])
-#             angle_math = 270 - ref_ang
-#             if angle_math < 0:
-#                 angle_math += 360
-#             angle_math = np.deg2rad(angle_math) # radians
-#             # Initialize cross-/longshore velocity arrays
-#             ul = np.ones_like(ui) * np.nan # Cross-shore vel.
-#             vl = np.ones_like(vi) * np.nan # Along-shore vel.
-#             # Rotate at each range level
-#             for i,r in enumerate(seg.range.values):
-#                 # Copy E, N velocity components
-#                 ur = seg.vEhpr.sel(range=r).values.copy()
-#                 vr = seg.vNhpr.sel(range=r).values.copy()
-#                 # Rotate
-#                 ul[:,i], vl[:,i] = rpct.rotate_vel(ur, vr, angle_math)
-#             # Save rotated velocities in dataset segment 
-#             seg['vCS'] = (['time', 'range'], ul)
-#             seg['vLS'] = (['time', 'range'], vl)
+            # Rotate East, North velocities to cross-/alongshore vel.
+            ui = seg.vEhpr.values
+            vi = seg.vNhpr.values
+            # Rotation angle (use ROXSI LSA reference angle from bathy)
+            ref_ang = int(dsb.attrs['reference_angle'][:3])
+            angle_math = 270 - ref_ang
+            if angle_math < 0:
+                angle_math += 360
+            angle_math = np.deg2rad(angle_math) # radians
+            # Initialize cross-/longshore velocity arrays
+            ul = np.ones_like(ui) * np.nan # Cross-shore vel.
+            vl = np.ones_like(vi) * np.nan # Along-shore vel.
+            # Rotate at each range level
+            for i,r in enumerate(seg.range.values):
+                # Copy E, N velocity components
+                ur = seg.vEhpr.sel(range=r).values.copy()
+                vr = seg.vNhpr.sel(range=r).values.copy()
+                # Rotate
+                ul[:,i], vl[:,i] = rpct.rotate_vel(ur, vr, angle_math)
+            # Save rotated velocities in dataset segment 
+            seg['vCS'] = (['time', 'range'], ul)
+            seg['vLS'] = (['time', 'range'], vl)
 
             # Estimate spectrum using cross-/alongshore velocities
             seglen = 60 * 60 # Segment length (seconds)
             if noast:
                 # No AST signal -> use eta_lin_krms
-                # dss = adcp.wavespec(seg, u='vCS', v='vLS', z='eta_lin_krms',
-                dss = adcp.wavespec(seg, u='vEhpr', v='vNhpr', z='eta_lin_krms',
+                dss = adcp.wavespec(seg, u='vCS', v='vLS', z='eta_lin_krms',
+                # dss = adcp.wavespec(seg, u='vEhpr', v='vNhpr', z='eta_lin_krms',
                                     fmin=0.05, fmax=1.0, seglen=seglen,
-                                    depth=depth_loc)
+                                    depth=depth_loc, z_lev=1)
             else:
-                dss = adcp.wavespec(seg, u='vEhpr', v='vNhpr', z='ASTd',
+                dss = adcp.wavespec(seg, u='vCS', v='vLS', z='ASTd',
+                # dss = adcp.wavespec(seg, u='vEhpr', v='vNhpr', z='ASTd',
                                     fmin=0.05, fmax=1.0, seglen=seglen,
-                                    depth=depth_loc)
+                                    depth=depth_loc, z_lev=1)
 
             # Spectral partitioning following Hanson et al. (2008),
             # as implemented in 'wavespectra' python library
