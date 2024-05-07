@@ -1287,7 +1287,7 @@ class ADCP():
 
         
     def wavespec(self, ds, u='vEhpr', v='vNhpr', z='ASTd', seglen=1200, 
-                 fmin=0.05, fmax=0.33, depth=None):
+                 fmin=0.05, fmax=0.33, depth=None, z_lev=None):
         """
         Estimate wave spectra from ADCP data in the input dataset ds.
         Uses the despiked N&E velocities and AST surface elevation
@@ -1307,6 +1307,9 @@ class ADCP():
             fmin - scalar; min. frequency for computing bulk params
             fmax - scalar; max. frequency for computing bulk params
             depth - scalar; segment depth (optional)
+            z_lev - scalar; depth level for velocities. If None,
+                            uses highest available range bin following
+                            Lentz et al. (2021)
 
         Returns:
             dss_concat - combined dataset of spectral segments
@@ -1335,13 +1338,19 @@ class ADCP():
             if np.all(np.isnan(seg_ast)):
                 # AST signal all NaN -> use z_lin instead
                 seg_ast = ds['z_lin'].sel(time=slice(t0ss, t1ss))
-            # Get optimal velocity range bin number following Lentz et al. (2021)
-            # Use 'bfill' to be conservative (round up)
-            z_opt = seg_ast.min() - ds_seg.sel(range=zic,
-                                               method='bfill').range.item()
-            # Save range cell value
-            range_val = ds_seg.sel(range=z_opt,
-                                   method='nearest').range.item() 
+            # Use velocities at specified range level
+            if z_lev is None:
+                # Get optimal velocity range bin number following Lentz et al. (2021)
+                # Use 'bfill' to be conservative (round up)
+                z_opt = seg_ast.min() - ds_seg.sel(range=zic,
+                                                   method='bfill').range.item()
+                # Save range cell value
+                range_val = ds_seg.sel(range=z_opt,
+                                       method='nearest').range.item() 
+            else:
+                z_opt = z_lev
+                range_val = ds_seg.sel(range=z_opt,
+                                       method='nearest').range.item() 
             # Interpolate E&N velocities
             vEd = ds_seg[u].interpolate_na(dim='time',
                 fill_value="extrapolate").sel(range=z_opt, 
