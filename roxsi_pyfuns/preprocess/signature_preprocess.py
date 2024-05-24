@@ -1878,13 +1878,14 @@ if __name__ == '__main__':
                 help=("Path to data root directory"),
                 type=str,
                 # default='/home/malila/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
-                default=r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
+                # default=r'/media/mikapm/T7 Shield/ROXSI/Asilomar2022/SmallScaleArray/Signatures',
+                default=r'/media/mikapm/T7 Shield/ROXSI/Hopkins2023/Signatures',
                 )
         parser.add_argument("-ser", 
                 help=('Instrument serial number. To loop through all, select "ALL".'),
                 type=str,
                 choices=['103088', '103094', '103110', '103063', '103206', 'ALL'],
-                default='103094',
+                default='103206',
                 )
         parser.add_argument("-M", 
                 help=("Pressure transform segment window length"),
@@ -1916,6 +1917,10 @@ if __name__ == '__main__':
                 )
         parser.add_argument("--overwrite_nc", 
                 help=("Overwrite existing netcdf files?"),
+                action="store_true",
+                )
+        parser.add_argument("--hopkins", 
+                help=("Use if data from Hopkins 2023 experiment"),
                 action="store_true",
                 )
 
@@ -1971,14 +1976,15 @@ if __name__ == '__main__':
     # Call args parser to create variables out of input arguments
     args = parse_args(args=sys.argv[1:])
 
-    # Mooring info excel file path (used when initializing ADV class)
-    rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
-    fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
+    if not args.hopkins:
+        # Mooring info excel file path (used when initializing ADV class)
+        rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
+        fn_minfo = os.path.join(rootdir, 'Asilomar_SSA_2022_mooring_info.xlsx')
 
-    # Read bathymetry netcdf file
-    bathydir = os.path.join(rootdir, 'Bathy')
-    fn_bathy = os.path.join(bathydir, 'Asilomar_2022_SSA_bathy.nc')
-    dsb = xr.decode_cf(xr.open_dataset(fn_bathy, decode_coords='all'))
+        # Read bathymetry netcdf file
+        bathydir = os.path.join(rootdir, 'Bathy')
+        fn_bathy = os.path.join(bathydir, 'Asilomar_2022_SSA_bathy.nc')
+        dsb = xr.decode_cf(xr.open_dataset(fn_bathy, decode_coords='all'))
     
     # Check if processing just one serial number or all
     if args.ser.lower() == 'all':
@@ -1988,28 +1994,29 @@ if __name__ == '__main__':
         # Only process one serial number
         sers = [args.ser]
 
-    # Read atmospheric pressure time series and calculate
-    # atmospheric pressure anomaly
-    fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
-    if not os.path.isfile(fn_patm):
-        # csv file does not exist -> read mat file and generate dataframe
-        fn_matp = os.path.join(rootdir, 'noaa_atm_pres_simple.mat')
-        mat = loadmat(fn_matp)
-        mat_pres = mat['A']['atm_pres'].item().squeeze()
-        mat_time = mat['A']['time_vec'].item().squeeze() # In Matlab char() format
-        # Make into pandas dataframe
-        dfa = pd.DataFrame(data={'dbar':mat_pres}, 
-                           index=pd.to_datetime(mat_time))
-        dfa.index.rename('time', inplace=True)
-        # convert from mbar to dbar
-        dfa['dbar'] /= 100
-        dfa['dbar'] -= 0.032 # Empirical correction factor
-        # Calculate anomaly from mean
-        dfa['dbar_anom'] = dfa['dbar'] - dfa['dbar'].mean()
-        # Save as csv
-        dfa.to_csv(fn_patm)
-    else:
-        dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
+    if not args.hopkins:
+        # Read atmospheric pressure time series and calculate
+        # atmospheric pressure anomaly
+        fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
+        if not os.path.isfile(fn_patm):
+            # csv file does not exist -> read mat file and generate dataframe
+            fn_matp = os.path.join(rootdir, 'noaa_atm_pres_simple.mat')
+            mat = loadmat(fn_matp)
+            mat_pres = mat['A']['atm_pres'].item().squeeze()
+            mat_time = mat['A']['time_vec'].item().squeeze() # In Matlab char() format
+            # Make into pandas dataframe
+            dfa = pd.DataFrame(data={'dbar':mat_pres}, 
+                            index=pd.to_datetime(mat_time))
+            dfa.index.rename('time', inplace=True)
+            # convert from mbar to dbar
+            dfa['dbar'] /= 100
+            dfa['dbar'] -= 0.032 # Empirical correction factor
+            # Calculate anomaly from mean
+            dfa['dbar_anom'] = dfa['dbar'] - dfa['dbar'].mean()
+            # Save as csv
+            dfa.to_csv(fn_patm)
+        else:
+            dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
 
     # Plot all HPR timeseries first
     for ser in sers:
