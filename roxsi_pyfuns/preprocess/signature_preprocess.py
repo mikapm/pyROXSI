@@ -129,7 +129,8 @@ class ADCP():
             # Get mooring ID
             key = 'mooring_ID'
             self.mid = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
-            key = 'mooring_ID_long'
+            # key = 'mooring_ID_long'
+            key = 'mooring_ID'
             self.midl = self.dfm[self.dfm['serial_number'].astype(str)==self.ser][key].item()
             # Get record start and end timestamps
             key = 'record_start'
@@ -152,7 +153,7 @@ class ADCP():
             self.lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
 
 
-    def _fns_from_ser(self):
+    def _fns_from_ser(self, sort=False):
         """
         Returns a list of .mat filenames in self.datadir corresponding
         to serial number.
@@ -161,32 +162,33 @@ class ADCP():
         self.fns = sorted(glob.glob(os.path.join(self.datadir,
             '*S{}A00*.mat'.format(self.ser))))
 
-        # If serial number is 103206, find correct order of .mat files
-        # based on dates
-        if self.ser == '103206':
-            # Check if sort indices already saved
-            fn_sort_ind = os.path.join(self.datadir, 'sort_ind_mat_{}.csv'.format(
-                self.ser))
-            if not os.path.isfile(fn_sort_ind):
-                print('Getting correct order order of .mat files ...')
-                date_list = [] # List for first timestamp of each .mat file
-                # Iterate over .mat files, get timestamps
-                for fn in tqdm(self.fns):
-                    _, times = self.read_mat_times(fn_mat=fn)
-                    # Append first timestamp to list
-                    date_list.append(times[0])
-                # Get sorting indices of date list
-                sort_ind = np.argsort(date_list).astype(int)
-                # Save sorting indices for later use
-                dfs = pd.Series(data=sort_ind)
-                dfs.to_csv(fn_sort_ind)
-            else:
-                # Read sorting indices from pre-saved file
-                print('Reading sorting indices from file ...')
-                dfs = pd.read_csv(fn_sort_ind, index_col=0)
-                sort_ind = dfs.values.astype(int).squeeze()
-            # Sort self.fns in correct order
-            self.fns = np.array(self.fns)[sort_ind].tolist()
+        if sort:
+            # If serial number is 103206, find correct order of .mat files
+            # based on dates
+            if self.ser == '103206':
+                # Check if sort indices already saved
+                fn_sort_ind = os.path.join(self.datadir, 'sort_ind_mat_{}.csv'.format(
+                    self.ser))
+                if not os.path.isfile(fn_sort_ind):
+                    print('Getting correct order order of .mat files ...')
+                    date_list = [] # List for first timestamp of each .mat file
+                    # Iterate over .mat files, get timestamps
+                    for fn in tqdm(self.fns):
+                        _, times = self.read_mat_times(fn_mat=fn)
+                        # Append first timestamp to list
+                        date_list.append(times[0])
+                    # Get sorting indices of date list
+                    sort_ind = np.argsort(date_list).astype(int)
+                    # Save sorting indices for later use
+                    dfs = pd.Series(data=sort_ind)
+                    dfs.to_csv(fn_sort_ind)
+                else:
+                    # Read sorting indices from pre-saved file
+                    print('Reading sorting indices from file ...')
+                    dfs = pd.read_csv(fn_sort_ind, index_col=0)
+                    sort_ind = dfs.values.astype(int).squeeze()
+                # Sort self.fns in correct order
+                self.fns = np.array(self.fns)[sort_ind].tolist()
 
 
     def read_mat_times(self, mat=None, fn_mat=None):
@@ -467,9 +469,10 @@ class ADCP():
         return ds
 
 
-    def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2022-06-25'),
+    def loaddata_vel(self, fn_mat, ref_date=pd.Timestamp('2000-01-01'),
                      despike_vel=False, despike_ast=True, only_hpr=False,
-                     fmin=0.05, fmax=0.33, echo=False, et0=None, et1=None,
+                     only_ast=False, fmin=0.05, fmax=0.33, echo=False, 
+                     et0=None, et1=None, tmin=None, n_zlev=28, 
                     ):
         """
         Load Nortek Signature 1000 velocity and surface track (AST) 
@@ -489,11 +492,14 @@ class ADCP():
                           segments.
             only_hpr - bool; if True, output only pd.Dataframe of heading,
                        pitch and roll.
+            only_ast - bool; if True, only returns despiked AST signals
             fmin - scalar; min. frequency for surface reconstruction from pressure
             fmax - scalar; max. frequency for surface reconstruction from pressure
             echo - bool; if True, only reads and returns echogram dataarray
-            et0 - pd.Timestamp - echogram dataarray start time stamp
-            et1 - pd.Timestamp - echogram dataarray end time stamp
+            et0 - pd.Timestamp; echogram dataarray start time stamp
+            et1 - pd.Timestamp; echogram dataarray end time stamp
+            tmin - pd.Timestamp; minimum start time to process
+            n_zlev - int; number of vertical bins in data
         
         Returns:
             ds - xarray.Dataset with data read from input .mat file
@@ -511,6 +517,9 @@ class ADCP():
 
         # Read and convert general (velocity) time array
         time_mat, time_arr = self.read_mat_times(mat=mat)
+        # Check if last element in time_arr < tmin
+        if tmin is not None and time_arr[-1] < tmin:
+            return time_arr
         # Check for duplicates in time_arr
         time_arr_ind = pd.Index(time_arr)
         duplicates = time_arr_ind.duplicated().any()
@@ -599,7 +608,7 @@ class ADCP():
             return dae
         # Convert to DataArray for interpolation
         da5 = xr.DataArray(vb5,
-                           coords=[tb5, np.arange(28)],
+                           coords=[tb5, np.arange(n_zlev)],
                            dims=['time', 'z'],
                           )
         # Interpolate 5th beam velocity to beam 1-4 time_arr
@@ -734,11 +743,20 @@ class ADCP():
                                 df_ast['des_eta'].loc[t0ss:t1ss] = detrend(seg)
                             # Save eta of despiked segment to correct indices in df_ast
                             df_ast['raw_eta'].loc[t0ss:t1ss] = detrend(seg)
+                # Add pressure to df
+                df_ast['presure'] = pres
                 # Save dataframe to csv
                 df_ast.to_csv(fn_ast_desp)
+                # End script short?
+                if only_ast:
+                    return df_ast
+
+        # In case despiked AST file already exists, exit script if requested
+        if only_ast:
+            return time_arr
 
         # Despike (beam) velocities?
-        if despike_vel:
+        if despike_vel and not only_ast:
             # First check if despiked velocities already saved
             dir_vel_desp = os.path.join(self.outdir, 'vel_despiked')
             if not os.path.isdir(dir_vel_desp):
@@ -816,7 +834,7 @@ class ADCP():
                                         'vb5': (['time', 'z'], vb5i),
                                         },
                             coords={'time': (['time'], time_arr),
-                                    'z': (['z'], np.arange(28))
+                                    'z': (['z'], np.arange(n_zlev))
                                     },
                             )
     
@@ -1424,26 +1442,27 @@ class ADCP():
         ds.coords['time'] = time_vals.astype('f8')
         # Make lon, lat coordinates
         if self.bathy is None:
-            lon = self.dfm[self.dfm['mooring_ID_long']==self.midl]['longitude'].item()
-            ds = ds.assign_coords(lon=[lon])
-            lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
-            ds = ds.assign_coords(lat=[lat])
+            print('No bathy')
+            # lon = self.dfm[self.dfm['mooring_ID']==self.midl]['longitude'].item()
+            # ds = ds.assign_coords(lon=[lon])
+            # lat = self.dfm[self.dfm['mooring_ID']==self.midl]['latitude'].item()
+            # ds = ds.assign_coords(lat=[lat])
         else:
             lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
             ds = ds.assign_coords(lon=[lon])
             lat = self.bathy['{}_llc'.format(self.mid)].sel(llc='latitude').item()
             ds = ds.assign_coords(lat=[lat])
         # Set variable attributes for output netcdf file
-        ds.lat.attrs['standard_name'] = 'latitude'
-        ds.lat.attrs['long_name'] = 'Mooring latitude estimated from orthophoto'
-        ds.lat.attrs['units'] = 'degrees_north'
-        ds.lat.attrs['valid_min'] = -90.0
-        ds.lat.attrs['valid_max'] = 90.0
-        ds.lon.attrs['standard_name'] = 'longitude'
-        ds.lon.attrs['long_name'] = 'Mooring longitude estimated from orthophoto'
-        ds.lon.attrs['units'] = 'degrees_east'
-        ds.lon.attrs['valid_min'] = -180.0
-        ds.lon.attrs['valid_max'] = 180.0
+#         ds.lat.attrs['standard_name'] = 'latitude'
+#         ds.lat.attrs['long_name'] = 'Mooring latitude estimated from orthophoto'
+#         ds.lat.attrs['units'] = 'degrees_north'
+#         ds.lat.attrs['valid_min'] = -90.0
+#         ds.lat.attrs['valid_max'] = 90.0
+#         ds.lon.attrs['standard_name'] = 'longitude'
+#         ds.lon.attrs['long_name'] = 'Mooring longitude estimated from orthophoto'
+#         ds.lon.attrs['units'] = 'degrees_east'
+#         ds.lon.attrs['valid_min'] = -180.0
+#         ds.lon.attrs['valid_max'] = 180.0
         ds.time.encoding['units'] = time_units
         ds.time.attrs['units'] = time_units
         ds.time.attrs['standard_name'] = 'time'
@@ -1577,11 +1596,11 @@ class ADCP():
         ds.attrs['serial_number'] = self.ser
         ds.attrs['transducer_height'] = '{} m'.format(self.zp)
         # Read more attributes from mooring info file if provided
-        if self.dfm is not None:
-            comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
-            ds.attrs['comment'] = comments
-            config = self.dfm[self.dfm['mooring_ID_long']==self.midl]['config'].item()
-            ds.attrs['configurations'] = config
+#         if self.dfm is not None:
+#             comments = self.dfm[self.dfm['mooring_ID']==self.midl]['notes'].item()
+#             ds.attrs['comment'] = comments
+#             config = self.dfm[self.dfm['mooring_ID']==self.midl]['config'].item()
+#             ds.attrs['configurations'] = config
         ds.attrs['Conventions'] = 'CF-1.8'
         ds.attrs['featureType'] = "timeSeries"
         ds.attrs['source'] =  "Sub-surface observation"
@@ -1594,8 +1613,8 @@ class ADCP():
         # Set encoding before saving
         encoding = {'time': {'zlib': False, '_FillValue': None},
                     'range': {'zlib': False, '_FillValue': None},
-                    'lat': {'zlib': False, '_FillValue': None},
-                    'lon': {'zlib': False, '_FillValue': None},
+                    # 'lat': {'zlib': False, '_FillValue': None},
+                    # 'lon': {'zlib': False, '_FillValue': None},
                    }     
         # Set variable fill values
         for k in list(ds.keys()):
@@ -1635,9 +1654,9 @@ class ADCP():
         ds.coords['time'] = time_vals.astype(float)
         # Make lon, lat coordinates
         if self.bathy is None:
-            lon = self.dfm[self.dfm['mooring_ID_long']==self.midl]['longitude'].item()
+            lon = self.dfm[self.dfm['mooring_ID']==self.midl]['longitude'].item()
             ds = ds.assign_coords(lon=[lon])
-            lat = self.dfm[self.dfm['mooring_ID_long']==self.midl]['latitude'].item()
+            lat = self.dfm[self.dfm['mooring_ID']==self.midl]['latitude'].item()
             ds = ds.assign_coords(lat=[lat])
         else:
             lon = self.bathy['{}_llc'.format(self.mid)].sel(llc='longitude').item()
@@ -1836,9 +1855,9 @@ class ADCP():
         ds.attrs['segment_length'] = '1200 seconds'
         # Read more attributes from mooring info file if provided
         if self.dfm is not None:
-            comments = self.dfm[self.dfm['mooring_ID_long']==self.midl]['notes'].item()
+            comments = self.dfm[self.dfm['mooring_ID']==self.midl]['notes'].item()
             ds.attrs['comment'] = comments
-            config = self.dfm[self.dfm['mooring_ID_long']==self.midl]['config'].item()
+            config = self.dfm[self.dfm['mooring_ID']==self.midl]['config'].item()
             ds.attrs['configurations'] = config
         ds.attrs['Conventions'] = 'CF-1.8'
         ds.attrs['featureType'] = "timeSeries"
@@ -1866,6 +1885,10 @@ class ADCP():
 
 # Main script
 if __name__ == '__main__':
+
+    import warnings
+    warnings.filterwarnings("ignore")
+
     """
     Main script for pre-processing Vector Signature1000 raw data.
     """
@@ -1985,6 +2008,10 @@ if __name__ == '__main__':
         bathydir = os.path.join(rootdir, 'Bathy')
         fn_bathy = os.path.join(bathydir, 'Asilomar_2022_SSA_bathy.nc')
         dsb = xr.decode_cf(xr.open_dataset(fn_bathy, decode_coords='all'))
+    else:
+        rootdir = os.path.split(args.dr)[0] # Root ROXSI SSA directory
+        fn_minfo = os.path.join(rootdir, 'Hopkins_SSA_2023_mooring_info.xlsx')
+        dsb = None
     
     # Check if processing just one serial number or all
     if args.ser.lower() == 'all':
@@ -1995,6 +2022,7 @@ if __name__ == '__main__':
         sers = [args.ser]
 
     if not args.hopkins:
+        site = 'Asilomar'
         # Read atmospheric pressure time series and calculate
         # atmospheric pressure anomaly
         fn_patm = os.path.join(rootdir, 'noaa_atm_pressure.csv')
@@ -2017,6 +2045,9 @@ if __name__ == '__main__':
             dfa.to_csv(fn_patm)
         else:
             dfa = pd.read_csv(fn_patm, parse_dates=['time']).set_index('time')
+    else:
+        site = 'Hopkins'
+        dfa = None
 
     # Plot all HPR timeseries first
     for ser in sers:
@@ -2113,11 +2144,11 @@ if __name__ == '__main__':
             date0_str = ''.join(date0.split('-'))
             date1_str = ''.join(date1.split('-'))
             fn_nc0 = os.path.join(outdir, 
-                'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
-                    adcp.mid, date0_str))
+                '{}_SSA_L1_Sig_Vel_{}_{}.nc'.format(
+                    site, adcp.mid, date0_str))
             fn_nc1 = os.path.join(outdir, 
-                'Asilomar_SSA_L1_Sig_Vel_{}_{}.nc'.format(
-                    adcp.mid, date1_str))
+                '{}_SSA_L1_Sig_Vel_{}_{}.nc'.format(
+                    site, adcp.mid, date1_str))
 
             if not os.path.isfile(fn_nc0) or not os.path.isfile(fn_nc1):
                 # Read mat structure for velocities and 1D timeseries
@@ -2126,15 +2157,16 @@ if __name__ == '__main__':
                 date0 = str(pd.Timestamp(dsv.time[0].values).date())
                 date1 = str(pd.Timestamp(dsv.time[-1].values).date())
                 dth = pd.Timestamp('2022-07-01') # Threshold date for 103206
-                if ser == '103206' and pd.Timestamp(dsv.time[-1].values).date() <= dth:
-                    date1 = str((pd.Timestamp(dsv.time[-1].values) + 
-                             pd.Timedelta(hours=1)).date())
-                if date0 == date1:
-                    # Append entire dataset to list for concatenating
-                    dsv_daily.append(dsv)
-                    # Remove added hour from date1
+                if not args.hopkins:
                     if ser == '103206' and pd.Timestamp(dsv.time[-1].values).date() <= dth:
-                        date1 = str(pd.Timestamp(dsv.time[-1].values).date())
+                        date1 = str((pd.Timestamp(dsv.time[-1].values) + 
+                                pd.Timedelta(hours=1)).date())
+                    if date0 == date1:
+                        # Append entire dataset to list for concatenating
+                        dsv_daily.append(dsv)
+                        # Remove added hour from date1
+                        if ser == '103206' and pd.Timestamp(dsv.time[-1].values).date() <= dth:
+                            date1 = str(pd.Timestamp(dsv.time[-1].values).date())
                 else:
                     # Split dsv to date0 and date1
                     dsv0 = dsv.sel(time=date0).copy()
@@ -2237,10 +2269,11 @@ if __name__ == '__main__':
                     # Make new empty list and append the following day
                     dsv_daily = []
                     # Don't do it for L5
-                    if ser != '103206' or np.logical_and(
-                        ser == '103206', pd.Timestamp(dsv.time[-1].values).date() >= dth):
-                        dsv1 = dsv.sel(time=date1).copy()
-                        dsv_daily.append(dsv1)
+                    if not args.hopkins:
+                        if ser != '103206' or np.logical_and(
+                            ser == '103206', pd.Timestamp(dsv.time[-1].values).date() >= dth):
+                            dsv1 = dsv.sel(time=date1).copy()
+                            dsv_daily.append(dsv1)
                 if i == (len(adcp.fns)-1):
                     # Last file, save last netcdf
                     dsd = xr.concat(dsv_daily, dim='time')
