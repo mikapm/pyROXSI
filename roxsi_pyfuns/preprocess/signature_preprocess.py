@@ -314,16 +314,14 @@ class ADCP():
         return da
 
 
-    def ampcorr2ds(self, mat, t0=None, t1=None):
+    def ampcorr2ds(self, mat, ref_date=pd.Timestamp('2000-01-01'),
+                   fillvalue=999.):
         """
         # Create xr.DataArray from velocity amplitude and correlation arrays.
 
         Parameters:
             mat - dict; matlab structure of raw Signature data
-            t0 - pd.Timestamp - start time of output da. If None, returns
-                                data from the start of the array
-            t1 - pd.Timestamp - end time of output da. If None, returns
-                                data from the start of the array
+            ref_date - reference date to use for time axis.
 
         Returns:
             dae - xr.DataArray with echogram data from inputs
@@ -345,6 +343,11 @@ class ADCP():
             time_arr_ind = pd.Index(time_arr)
             print('after removal of dupl.: {} left'.format(np.sum(
                 time_arr_ind.duplicated())))
+
+        # Convert time array to numerical format
+        time_units = 'seconds since {:%Y-%m-%d 00:00:00}'.format(ref_date)
+        time_vals = date2num(time_arr, time_units, calendar='standard', 
+                             has_year_zero=True)
 
         # Read number of vertical cells for velocities
         ncells = mat['Config']['Burst_NCells'].item().squeeze()
@@ -460,11 +463,20 @@ class ADCP():
                                 },
                        )
 
-        # Crop output dataset if requested
-        if t0 is not None:
-            ds = ds.sel(time=slice(t0, None))
-        if t1 is not None:
-            ds = ds.sel(time=slice(None, t1))
+#         # Set encoding
+#         ds.time.encoding['units'] = time_units
+#         ds.time.attrs['units'] = time_units
+#         ds.time.attrs['standard_name'] = 'time'
+#         ds.time.attrs['long_name'] = 'Local time (PDT)'
+#         ds.z.attrs['units'] = 'm'
+#         ds.z.attrs['standard_name'] = 'range'
+#         ds.z.attrs['long_name'] = 'Velocity bin distance from seabed'
+#         encoding = {'time': {'zlib': False, '_FillValue': None},
+#                     'z': {'zlib': False, '_FillValue': None},
+#                    }     
+#         # Set variable fill values
+#         for k in list(ds.keys()):
+#             encoding[k] = {'_FillValue': fillvalue}
 
         return ds
 
