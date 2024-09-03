@@ -8,7 +8,7 @@ import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 from scipy import optimize
-from scipy.signal import hann
+from scipy.signal.windows import hann
 from roxsi_pyfuns import wave_spectra as rpws
 from roxsi_pyfuns import zero_crossings as rpzc
 
