@@ -1026,8 +1026,6 @@ class ADCP():
             interp - str; interpolation method for discarded data.
                           Options: see pandas.DataFrame.interpolate()
             sec_lim - scalar; maximum gap size to interpolate (sec)
-            corrd - bool; if True, input velocities are correlation-
-                    corrected by self.despike_correlations()
             min_new_spikes - int; iterate until number of new spikes detected 
                              is lower than this value. 
             max_iter - int; maximum number of despiking iterations
