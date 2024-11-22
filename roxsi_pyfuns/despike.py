@@ -407,9 +407,8 @@ def GP_despike(ts, dropout_mask=None, chunksize=200, overlap=None,
         return y_desp
 
 
-
 def phase_space_3d(ts, replace_single='linear', replace_multi='linear',
-        threshold='universal', figname=None):
+                   threshold='universal', figname=None):
     """
     3D phase space method for despiking originally developed by
     Goring and Nikora (2002), and later modified by Wahl (2003) and
